@@ -33,6 +33,7 @@ SSH_KEY=""
 XO_CONFIG=""
 WAIT_TIMEOUT="60"
 USE_PREBUILT="false"
+USE_CACHE="true"
 PRINT_ONLY="false"
 
 function Usage {
@@ -70,6 +71,9 @@ VM:
 Xen Orchestra:
   --config FILE              xo-install.cfg used inside the VM (default: ./xo-install.cfg or sample.xo-install.cfg)
   --timeout MIN              minutes to wait for the installation to finish (default: $WAIT_TIMEOUT)
+  --no-cache                 don't use or keep a cached copy of the image on the host. By default the image is
+                             kept on the SR as "xo-remote-deploy cache: <image>" and downloaded again only when
+                             a newer image is published
   --prebuilt                 import the prebuilt Debian 11 image with xo-vm-import.sh instead (not recommended,
                              Debian 11 is end of life)
 
@@ -83,7 +87,7 @@ EOF
 
 function HandleArgs {
 
-    OPTS=$(getopt -o H:h --long host:,vlan:,internal,network:,network-name:,pif:,os:,name:,sr:,cpus:,memory:,disk:,ip:,netmask:,gateway:,dns:,ssh-key:,config:,timeout:,prebuilt,print,help -- "$@")
+    OPTS=$(getopt -o H:h --long host:,vlan:,internal,network:,network-name:,pif:,os:,name:,sr:,cpus:,memory:,disk:,ip:,netmask:,gateway:,dns:,ssh-key:,config:,timeout:,no-cache,prebuilt,print,help -- "$@")
 
     #shellcheck disable=SC2181
     if [[ $? != 0 ]]; then
@@ -170,6 +174,10 @@ function HandleArgs {
             --timeout)
                 WAIT_TIMEOUT="$2"
                 shift 2
+                ;;
+            --no-cache)
+                USE_CACHE="false"
+                shift
                 ;;
             --prebuilt)
                 USE_PREBUILT="true"
@@ -424,34 +432,74 @@ function Cleanup {
 }
 trap Cleanup ERR
 
-[[ -z "$IMAGE_VDI" ]] && echo "[2/6] Downloading and importing $VM_OS image"
-if [[ -n "$IMAGE_VDI" ]]; then
-    DISK="$IMAGE_VDI"
-    CREATED_VDIS+=("$DISK")
+# imported images are kept on the SR as cached base disks and VMs get clones of them. checksum of the
+# latest published image is the cache key, so a new download happens only when the image is updated
+IMAGE_FILE="${IMAGE_URL##*/}"
+CACHE_LABEL="xo-remote-deploy cache: $IMAGE_FILE"
+if [[ -z "$IMAGE_SHA" ]]; then
+    IMAGE_SHA=$(curl -fsSL "$IMAGE_SUMS" | awk -v f="$IMAGE_FILE" '$2==f || $2=="*"f {print $1}')
+fi
+if [[ -z "$IMAGE_SHA" ]]; then
+    echo "Couldn't get checksum of $IMAGE_FILE from $IMAGE_SUMS"
+    false
+fi
+
+BASE=""
+if [[ "$USE_CACHE" == "true" ]]; then
+    for vdi in $(xe vdi-list sr-uuid="$SR" name-label="$CACHE_LABEL" --minimal | tr ',' ' '); do
+        if [[ -z "$BASE" ]] && [[ "$(xe vdi-param-get uuid="$vdi" param-name=other-config param-key=xo-deploy-image-sha 2>/dev/null)" == "$IMAGE_SHA" ]]; then
+            BASE="$vdi"
+        elif xe vdi-destroy uuid="$vdi" >/dev/null 2>&1; then
+            # clones made from it stay intact
+            echo "  Removed outdated cached image ($vdi)"
+        fi
+    done
+fi
+
+if [[ -n "$BASE" ]]; then
+    # for ubuntu image stage is shown already before uploading
+    [[ "$STAGE_NET" == "1" ]] && echo "[2/6] Using cached $VM_OS image ($BASE), it matches the latest published image"
+elif [[ -n "$IMAGE_VDI" ]]; then
+    BASE="$IMAGE_VDI"
+    CREATED_VDIS+=("$BASE")
 else
+    echo "[2/6] Downloading and importing $VM_OS image"
     echo "  $IMAGE_URL"
     size=$(curl -fsSIL "$IMAGE_URL" | tr -d '\r' | awk 'tolower($1)=="content-length:" {s=$2} END {print s+0}')
     if [[ "$size" -le 0 ]]; then
         echo "Failed to get image size"
         false
     fi
-    expected=$(curl -fsSL "$IMAGE_SUMS" | awk -v f="${IMAGE_URL##*/}" '$2==f || $2=="*"f {print $1}')
-    DISK=$(xe vdi-create sr-uuid="$SR" name-label="$VM_NAME disk" type=user virtual-size="$size")
-    CREATED_VDIS+=("$DISK")
+    BASE=$(xe vdi-create sr-uuid="$SR" name-label="$VM_NAME disk" type=user virtual-size="$size")
+    CREATED_VDIS+=("$BASE")
     # mirror redirect is resolved first so progress is shown for one transfer only
     url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$IMAGE_URL")
     # progress bar redraws don't work over ssh without a terminal, print plain lines every 10% instead
-    curl -f -# "$url" 2> >(awk -v RS='\r' '/curl:/ {print; fflush(); next} match($0, /[0-9]+\.[0-9]%/) {p=int(substr($0, RSTART, RLENGTH-1)); if (p >= next_p) {printf "  downloaded %d%%\n", p; fflush(); next_p = p - p % 10 + 10}}' >&2) | tee >("${IMAGE_SUM_ALGO}sum" | awk '{print $1}' >"$TMPDIR/sum") | xe vdi-import uuid="$DISK" filename=/dev/stdin format=raw
+    curl -f -# "$url" 2> >(awk -v RS='\r' '/curl:/ {print; fflush(); next} match($0, /[0-9]+\.[0-9]%/) {p=int(substr($0, RSTART, RLENGTH-1)); if (p >= next_p) {printf "  downloaded %d%%\n", p; fflush(); next_p = p - p % 10 + 10}}' >&2) | tee >("${IMAGE_SUM_ALGO}sum" | awk '{print $1}' >"$TMPDIR/sum") | xe vdi-import uuid="$BASE" filename=/dev/stdin format=raw
     # checksum is written by a background process, give it a moment to finish
     for _ in {1..30}; do
         [[ -s "$TMPDIR/sum" ]] && break
         sleep 1
     done
-    if [[ -z "$expected" ]] || [[ "$(cat "$TMPDIR/sum")" != "$expected" ]]; then
+    if [[ "$(cat "$TMPDIR/sum")" != "$IMAGE_SHA" ]]; then
         echo "Image checksum verification failed"
         false
     fi
     echo "  Image imported and checksum verified"
+fi
+
+if [[ "$USE_CACHE" == "true" ]]; then
+    if [[ "${CREATED_VDIS[*]}" == *"$BASE"* ]]; then
+        # verified fresh import becomes the cached base, it's kept even if a later step fails
+        xe vdi-param-set uuid="$BASE" name-label="$CACHE_LABEL" name-description="Base image cached by xo-remote-deploy.sh, safe to delete" other-config:xo-deploy-image-sha="$IMAGE_SHA"
+        CREATED_VDIS=()
+        echo "  Image cached on SR for next deployments"
+    fi
+    DISK=$(xe vdi-clone uuid="$BASE" new-name-label="$VM_NAME disk")
+    CREATED_VDIS+=("$DISK")
+else
+    DISK="$BASE"
+    xe vdi-param-set uuid="$DISK" name-label="$VM_NAME disk"
 fi
 
 xe vdi-resize uuid="$DISK" disk-size="${VM_DISK}GiB"
@@ -720,7 +768,7 @@ PYEOF
 function SettingsScript {
     local var
     for var in NET_NAME NET_VLAN NET_PIF NET_EXISTING VM_NAME VM_SR VM_CPUS VM_MEMORY VM_DISK WAIT_TIMEOUT \
-        IMAGE_URL IMAGE_SUMS IMAGE_SUM_ALGO IMAGE_VDI VM_OS STAGE_NET; do
+        IMAGE_URL IMAGE_SUMS IMAGE_SUM_ALGO IMAGE_VDI IMAGE_SHA USE_CACHE VM_OS STAGE_NET; do
         printf 'export %s=%q\n' "$var" "${!var}"
     done
     # not exported, environment variables are limited to 128KiB each which the seed may exceed
@@ -763,6 +811,19 @@ function SSHSetup {
     SSH_CMD=(ssh "${ssh_opts[@]}" -o ControlMaster=auto -o ControlPath="$SSH_CTRL_DIR/cm" -o ControlPersist=120)
 }
 
+# prints uuid of cached base image on the host matching IMAGE_SHA, if any
+function CachedImage {
+    # shellcheck disable=SC2016
+    "${SSH_CMD[@]}" "$TARGET" "$(printf 'VM_SR=%q LABEL=%q SHA=%q\n' "$VM_SR" "xo-remote-deploy cache: ${IMAGE_URL##*/}" "$IMAGE_SHA")"'
+        if [[ "$VM_SR" == "default" ]]; then SR=$(xe pool-param-get uuid="$(xe pool-list --minimal)" param-name=default-SR); else SR="$VM_SR"; fi
+        for vdi in $(xe vdi-list sr-uuid="$SR" name-label="$LABEL" --minimal | tr "," " "); do
+            if [[ "$(xe vdi-param-get uuid="$vdi" param-name=other-config param-key=xo-deploy-image-sha 2>/dev/null)" == "$SHA" ]]; then
+                echo "$vdi"
+                break
+            fi
+        done' 2>/dev/null
+}
+
 # ubuntu image is converted from qcow2 to raw here and streamed to a new VDI on the host
 function UploadConvertedImage {
     local workdir="$SSH_CTRL_DIR/image"
@@ -772,8 +833,7 @@ function UploadConvertedImage {
     echo "Downloading $IMAGE_URL..."
     curl -fL --progress-bar -o "$workdir/$file" "$IMAGE_URL" || exit 1
 
-    local expected actual
-    expected=$(curl -fsSL "$IMAGE_SUMS" | awk -v f="$file" '$2==f || $2=="*"f {print $1}')
+    local expected="$IMAGE_SHA" actual
     if [[ -n $(command -v sha256sum 2>/dev/null) ]]; then
         actual=$(sha256sum "$workdir/$file" | awk '{print $1}')
     else
@@ -862,8 +922,17 @@ function Deploy {
     fi
 
     if [[ "$USE_PREBUILT" != "true" ]] && [[ "$VM_OS" == ubuntu* ]]; then
-        echo "[1/6] Downloading, converting and uploading $VM_OS image"
-        UploadConvertedImage
+        IMAGE_SHA=$(curl -fsSL "$IMAGE_SUMS" | awk -v f="${IMAGE_URL##*/}" '$2==f || $2=="*"f {print $1}')
+        if [[ -z "$IMAGE_SHA" ]]; then
+            echo "Couldn't get checksum of ${IMAGE_URL##*/} from $IMAGE_SUMS"
+            exit 1
+        fi
+        if [[ "$USE_CACHE" == "true" ]] && [[ -n $(CachedImage) ]]; then
+            echo "[1/6] Cached $VM_OS image found on host, skipping download"
+        else
+            echo "[1/6] Downloading, converting and uploading $VM_OS image"
+            UploadConvertedImage
+        fi
     fi
 
     # script is fed through stdin so nothing needs to be copied to the host

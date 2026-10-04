@@ -243,6 +243,8 @@ Progress is reported from the VM to the host through xenstore, so the VM doesn't
 
 SSH user in the VM is `xo` with your `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` key (or `--ssh-key`). A random password is generated and printed if no key is found. Ubuntu images are published as qcow2 and need `qemu-img` locally for conversion.
 
+The verified image is kept on the SR as a disk named `xo-remote-deploy cache: <image>` and each VM gets a clone of it, so the image is downloaded again only when a newer one is published (the outdated cached copy is removed then). The cached disk is safe to delete, use `--no-cache` to skip caching.
+
 `--prebuilt` imports the prebuilt image with `xo-vm-import.sh` instead. Note that the prebuilt image is based on Debian 11 which is end of life.
 
 See `./xo-remote-deploy.sh --help` for all options (vCPUs, memory, disk size, SR, timeout). `--print` shows the script that would be run on the host. Extra SSH options can be passed with `SSH_OPTS`, e.g. `SSH_OPTS="-p 2222 -i ~/.ssh/xcp"`.
