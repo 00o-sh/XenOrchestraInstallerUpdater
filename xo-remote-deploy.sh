@@ -435,7 +435,10 @@ else
     expected=$(curl -fsSL "$IMAGE_SUMS" | awk -v f="${IMAGE_URL##*/}" '$2==f || $2=="*"f {print $1}')
     DISK=$(xe vdi-create sr-uuid="$SR" name-label="$VM_NAME disk" type=user virtual-size="$size")
     CREATED_VDIS+=("$DISK")
-    curl -fL --progress-bar "$IMAGE_URL" | tee >("${IMAGE_SUM_ALGO}sum" | awk '{print $1}' >"$TMPDIR/sum") | xe vdi-import uuid="$DISK" filename=/dev/stdin format=raw
+    # mirror redirect is resolved first so progress is shown for one transfer only
+    url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$IMAGE_URL")
+    # progress bar redraws don't work over ssh without a terminal, print plain lines every 10% instead
+    curl -f -# "$url" 2> >(awk -v RS='\r' '/curl:/ {print; fflush(); next} match($0, /[0-9]+\.[0-9]%/) {p=int(substr($0, RSTART, RLENGTH-1)); if (p >= next_p) {printf "  downloaded %d%%\n", p; fflush(); next_p = p - p % 10 + 10}}' >&2) | tee >("${IMAGE_SUM_ALGO}sum" | awk '{print $1}' >"$TMPDIR/sum") | xe vdi-import uuid="$DISK" filename=/dev/stdin format=raw
     # checksum is written by a background process, give it a moment to finish
     for _ in {1..30}; do
         [[ -s "$TMPDIR/sum" ]] && break
