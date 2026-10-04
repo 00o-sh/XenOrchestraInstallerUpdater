@@ -1,0 +1,18 @@
+name: plugins
+on:
+  pull_request:
+    paths:
+      - 'plugins/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+    - name: xo-server-installer-updates tests
+      working-directory: plugins/xo-server-installer-updates
+      run: npm test

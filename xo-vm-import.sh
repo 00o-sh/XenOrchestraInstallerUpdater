@@ -9,6 +9,13 @@
 # image url is static and not configurable by user
 IMAGE_URL="https://xo-image.yawn.fi/downloads/image.xva.gz"
 
+# Optional non-interactive settings. Each prompt is skipped when its variable is set beforehand,
+# which allows running this script unattended, e.g. through xo-remote-deploy.sh over ssh.
+# XO_VM_NETWORK: network uuid for the VM interface
+# XO_VM_SR: storage repository uuid or "default" to use pool default SR
+# XO_VM_IP: ip-address or "dhcp". XO_VM_NETMASK, XO_VM_GATEWAY and XO_VM_DNS are used with static ip-address
+# XO_VM_NAME: optional name-label for the imported VM
+
 function OSCheck {
     set -e
 
@@ -29,6 +36,11 @@ function OSCheck {
 function NetworkChoose {
 
     set +e
+
+    if [[ -n "$XO_VM_NETWORK" ]]; then
+        vifuuid="$XO_VM_NETWORK"
+        return 0
+    fi
 
     # get network name/uuid of all available networks configured in the pool
     # shellcheck disable=SC1117
@@ -58,6 +70,11 @@ function NetworkChoose {
 function StorageChoose {
 
     set +e
+
+    if [[ -n "$XO_VM_SR" ]]; then
+        sruuid="$XO_VM_SR"
+        return 0
+    fi
 
     # get storage name/uuid of all available storages with content-type=user which should match all usable storage repositories
     # shellcheck disable=SC1117
@@ -101,6 +118,18 @@ function NetworkSettings {
     set -e
 
     ipregex="^[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}.[0-9]{1,3}$"
+
+    if [[ -n "$XO_VM_IP" ]]; then
+        ipaddress="$XO_VM_IP"
+        netmask=${XO_VM_NETMASK:-255.255.255.0}
+        gateway="$XO_VM_GATEWAY"
+        dns=${XO_VM_DNS:-8.8.8.8}
+        if [[ "$ipaddress" != "dhcp" ]] && ! [[ $ipaddress =~ $ipregex && $netmask =~ $ipregex && $dns =~ $ipregex ]]; then
+            echo "Invalid XO_VM_IP, XO_VM_NETMASK or XO_VM_DNS value"
+            exit 1
+        fi
+        return 0
+    fi
 
     echo
     echo "Set network settings for VM. Leave IP-address as blank to use DHCP"
@@ -165,6 +194,10 @@ function VMImport {
     fi
     echo
     echo "Import complete"
+
+    if [[ -n "$XO_VM_NAME" ]]; then
+        xe vm-param-set uuid="$uuid" name-label="$XO_VM_NAME"
+    fi
 
     # no network interface included in the image, we need to create one based on network uuid set by user earlier
     xe vif-create network-uuid="$vifuuid" vm-uuid="$uuid" device=0 >/dev/null

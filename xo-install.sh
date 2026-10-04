@@ -36,6 +36,7 @@ CONFIGPATH_PROXY=$(getent passwd root | cut -d: -f6)
 CONFIGUPDATE=${CONFIGUPDATE:-"true"}
 PLUGINS="${PLUGINS:-"all"}"
 ADDITIONAL_PLUGINS="${ADDITIONAL_PLUGINS:-"none"}"
+BUNDLED_PLUGINS="${BUNDLED_PLUGINS:-"none"}"
 REPOSITORY="${REPOSITORY:-"https://github.com/vatesfr/xen-orchestra"}"
 OS_CHECK="${OS_CHECK:-"true"}"
 ARCH_CHECK="${ARCH_CHECK:-"true"}"
@@ -500,6 +501,37 @@ function InstallAdditionalXOPlugins {
 }
 
 # symlink plugins in place based on what is set in xo-install.cfg
+# plugins shipped in plugins/ directory of this repository are added to the build the same way as 3rd party plugins
+function InstallBundledXOPlugins {
+
+    set -euo pipefail
+
+    trap ErrorHandling ERR INT
+
+    if [[ -z "$BUNDLED_PLUGINS" ]] || [[ "$BUNDLED_PLUGINS" == "none" ]]; then
+        return 0
+    fi
+
+    echo
+    printprog "Adding bundled plugin(s)"
+
+    local BUNDLED_PLUGIN
+    IFS=',' read -ra BUNDLED_PLUGIN <<<"$BUNDLED_PLUGINS"
+    for x in "${BUNDLED_PLUGIN[@]}"; do
+        if [[ ! -f "$SCRIPT_DIR/plugins/$x/package.json" ]]; then
+            echo
+            printfail "$x not found in $SCRIPT_DIR/plugins, skipping.."
+            continue
+        fi
+        local PLUGIN_DIR="$INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/$x"
+        runcmd "rm -rf \"$PLUGIN_DIR\" && cp -r \"$SCRIPT_DIR/plugins/$x\" \"$PLUGIN_DIR\" && rm -rf \"$PLUGIN_DIR/test\""
+        # lets plugin find this script and installation
+        printf '{ "scriptDir": "%s", "installDir": "%s" }\n' "$SCRIPT_DIR" "$INSTALLDIR" >"$PLUGIN_DIR/installer.json"
+    done
+
+    printok "Adding bundled plugin(s)"
+}
+
 function InstallXOPlugins {
 
     set -euo pipefail
@@ -714,6 +746,9 @@ function InstallXO {
 
     # Fetch 3rd party plugins source code
     InstallAdditionalXOPlugins
+
+    # Add plugins shipped in this repository
+    InstallBundledXOPlugins
 
     echo
     printinfo "xo-server and xo-web build takes quite a while. Grab a cup of coffee and lay back"
@@ -1111,11 +1146,11 @@ EOF
 # if any arguments were given to script, handle them here
 function HandleArgs {
 
-    OPTS=$(getopt -o: --long force,rollback,update,install,proxy -- "$@")
+    OPTS=$(getopt -o: --long force,rollback,rollback-to:,update,install,proxy -- "$@")
 
     #shellcheck disable=SC2181
     if [[ $? != 0 ]]; then
-        echo "Usage: $SCRIPT_DIR/$(basename "$0") [--install | --update | --rollback ] [--proxy] [--force]"
+        echo "Usage: $SCRIPT_DIR/$(basename "$0") [--install | --update | --rollback | --rollback-to <build> ] [--proxy] [--force]"
         exit 1
     fi
 
@@ -1144,6 +1179,11 @@ function HandleArgs {
                 ;;
             --rollback)
                 shift
+                local ROLLBACKARG=1
+                ;;
+            --rollback-to)
+                ROLLBACK_TO="$2"
+                shift 2
                 local ROLLBACKARG=1
                 ;;
             --proxy)
@@ -1197,13 +1237,55 @@ function HandleArgs {
     fi
 
     if [[ "$ROLLBACKARG" -gt 0 ]]; then
-        RollBackInstallation
+        if [[ -n "${ROLLBACK_TO:-}" ]]; then
+            RollBackInstallationTo "$ROLLBACK_TO"
+        else
+            RollBackInstallation
+        fi
         exit
     fi
 
 }
 
 # all updates are individual complete installations so we have a possibility to rollback by just symlinking to different installation
+# point xo-server, xo-web and xo-cli to given build and restart xo-server
+function SwitchXOServerInstallation {
+    local INSTALLATION="$1"
+
+    printinfo "Setting $INSTALLDIR/xo-server symlink to $INSTALLATION/packages/xo-server"
+    runcmd "ln -sfn $INSTALLATION/packages/xo-server $INSTALLDIR/xo-server"
+    printinfo "Setting $INSTALLDIR/xo-web symlink to $INSTALLATION/packages/xo-web"
+    runcmd "ln -sfn $INSTALLATION/packages/xo-web $INSTALLDIR/xo-web"
+    printinfo "Setting $INSTALLDIR/xo-web-v6 symlink to $INSTALLATION/@xen-orchestra/web"
+    runcmd "ln -sfn $INSTALLATION/@xen-orchestra/web $INSTALLDIR/xo-web-v6"
+    printinfo "Setting $INSTALLDIR/xo-cli symlink to $INSTALLATION/packages/xo-cli"
+    runcmd "ln -sfn $INSTALLATION/packages/xo-cli $INSTALLDIR/xo-cli"
+    echo
+    printinfo "Replacing xo.server.service systemd configuration file"
+    runcmd "/bin/cp -f $INSTALLATION/packages/xo-server/xo-server.service /etc/systemd/system/xo-server.service"
+    runcmd "/bin/systemctl daemon-reload"
+    echo
+    printinfo "Restarting xo-server..."
+    runcmd "/bin/systemctl restart xo-server"
+    echo
+}
+
+# non interactive rollback of xo-server to a build in xo-builds directory, e.g. --rollback-to xen-orchestra-202401011200
+function RollBackInstallationTo {
+
+    set -uo pipefail
+
+    local INSTALLATION="$INSTALLDIR/xo-builds/$(basename "$1")"
+
+    if [[ ! -d "$INSTALLATION/packages/xo-server" ]]; then
+        printfail "$INSTALLATION is not a Xen Orchestra installation"
+        exit 1
+    fi
+
+    SwitchXOServerInstallation "$INSTALLATION"
+    printok "Rolled back to $INSTALLATION"
+}
+
 function RollBackInstallation {
 
     set -uo pipefail
@@ -1252,22 +1334,7 @@ function RollBackInstallation {
             *xen-orchestra*)
                 echo
                 if [[ "$XO_SVC" == "xo-server" ]]; then
-                    printinfo "Setting $INSTALLDIR/xo-server symlink to $INSTALLATION/packages/xo-server"
-                    runcmd "ln -sfn $INSTALLATION/packages/xo-server $INSTALLDIR/xo-server"
-                    printinfo "Setting $INSTALLDIR/xo-web symlink to $INSTALLATION/packages/xo-web"
-                    runcmd "ln -sfn $INSTALLATION/packages/xo-web $INSTALLDIR/xo-web"
-                    printinfo "Setting $INSTALLDIR/xo-web-v6 symlink to $INSTALLATION/@xen-orchestra/web"
-                    runcmd "ln -sfn $INSTALLATION/@xen-orchestra/web $INSTALLDIR/xo-web-v6"
-                    printinfo "Setting $INSTALLDIR/xo-cli symlink to $INSTALLATION/packages/xo-cli"
-                    runcmd "ln -sfn $INSTALLATION/packages/xo-cli $INSTALLDIR/xo-cli"
-                    echo
-                    printinfo "Replacing xo.server.service systemd configuration file"
-                    runcmd "/bin/cp -f $INSTALLATION/packages/xo-server/xo-server.service /etc/systemd/system/xo-server.service"
-                    runcmd "/bin/systemctl daemon-reload"
-                    echo
-                    printinfo "Restarting xo-server..."
-                    runcmd "/bin/systemctl restart xo-server"
-                    echo
+                    SwitchXOServerInstallation "$INSTALLATION"
                     break
                 fi
                 if [[ "$XO_SVC" == "xo-proxy" ]]; then
@@ -1642,7 +1709,7 @@ CheckOS
 CheckSystemd
 CheckCertificate
 # skip disk/memory check when using rollback as nothing new installed
-if [[ "$1" != "--rollback" ]]; then
+if [[ "$1" != "--rollback"* ]]; then
     CheckDiskFree
     CheckMemory
 fi

@@ -219,6 +219,36 @@ This image is updated weekly. Latest build date and MD5/SHA256 checksum can be c
 
 Built and tested on XCP-ng 8.x
 
+`xo-vm-import.sh` itself can also be run unattended by setting `XO_VM_NETWORK`, `XO_VM_SR`, `XO_VM_IP` (and `XO_VM_NETMASK`, `XO_VM_GATEWAY`, `XO_VM_DNS` for a static address) and optionally `XO_VM_NAME`.
+
+### Remote deploy over SSH
+
+`xo-remote-deploy.sh` runs from your workstation and needs only `ssh` and `python3` locally. It connects to the XenServer/XCP-ng pool master over SSH and:
+
+1. creates (or reuses) a network for the VM: a VLAN on a physical interface, or an existing network
+2. creates a VM from an official, checksum verified cloud image: Debian 13 by default, Debian 12, Ubuntu 26.04 or Ubuntu 24.04
+3. passes this repository's `xo-install.sh` and your `xo-install.cfg` (or `sample.xo-install.cfg`) to the VM with cloud-init, which installs Xen Orchestra from sources
+4. waits for the installation to finish (10-20 minutes) and prints the address of the VM
+
+Progress is reported from the VM to the host through xenstore, so the VM doesn't need to be reachable from your workstation. The VM needs internet access to download sources.
+
+```
+# new network "xo-test" tagged with VLAN 42 on eth0, VM gets address from DHCP
+./xo-remote-deploy.sh -H root@xcp-host --vlan 42
+
+# existing network by name-label, static address, Debian 12
+./xo-remote-deploy.sh -H root@xcp-host --network "Pool-wide network associated with eth0" --os debian12 \
+    --ip 192.168.1.50 --gateway 192.168.1.1 --dns 192.168.1.1
+```
+
+SSH user in the VM is `xo` with your `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` key (or `--ssh-key`). A random password is generated and printed if no key is found. Ubuntu images are published as qcow2 and need `qemu-img` locally for conversion.
+
+The verified image is kept on the SR as a disk named `xo-remote-deploy cache: <image>` and each VM gets a clone of it, so the image is downloaded again only when a newer one is published (the outdated cached copy is removed then). The cached disk is safe to delete, use `--no-cache` to skip caching.
+
+`--prebuilt` imports the prebuilt image with `xo-vm-import.sh` instead. Note that the prebuilt image is based on Debian 11 which is end of life.
+
+See `./xo-remote-deploy.sh --help` for all options (vCPUs, memory, disk size, SR, timeout). `--print` shows the script that would be run on the host. Extra SSH options can be passed with `SSH_OPTS`, e.g. `SSH_OPTS="-p 2222 -i ~/.ssh/xcp"`.
+
 ### Tests and VM image
 
 I run my own little implementation of automation consisting of ansible and virtual machines to test the installation on a regular basis with different operating systems. Test results are visible in badges on top of this readme.
