@@ -339,6 +339,8 @@ if [[ -z $(command -v xe 2>/dev/null) ]]; then
     exit 1
 fi
 
+[[ -n "$STAGE_NET" ]] && echo "[$STAGE_NET/6] Setting up network"
+
 if [[ -n "$NET_EXISTING" ]]; then
     XO_VM_NETWORK=$(xe network-list name-label="$NET_EXISTING" --minimal)
     if [[ -z "$XO_VM_NETWORK" ]] || [[ "$XO_VM_NETWORK" == *,* ]]; then
@@ -422,11 +424,12 @@ function Cleanup {
 }
 trap Cleanup ERR
 
+[[ -z "$IMAGE_VDI" ]] && echo "[2/6] Downloading and importing $VM_OS image"
 if [[ -n "$IMAGE_VDI" ]]; then
     DISK="$IMAGE_VDI"
     CREATED_VDIS+=("$DISK")
 else
-    echo "Downloading and importing $IMAGE_URL..."
+    echo "  $IMAGE_URL"
     size=$(curl -fsSIL "$IMAGE_URL" | tr -d '\r' | awk 'tolower($1)=="content-length:" {s=$2} END {print s+0}')
     if [[ "$size" -le 0 ]]; then
         echo "Failed to get image size"
@@ -448,17 +451,18 @@ else
         echo "Image checksum verification failed"
         false
     fi
-    echo "Image imported and checksum verified"
+    echo "  Image imported and checksum verified"
 fi
 
 xe vdi-resize uuid="$DISK" disk-size="${VM_DISK}GiB"
 
 # cloud-init NoCloud seed is attached as a small extra disk, no ISO SR needed
 echo "$SEED_B64" | base64 -d >"$TMPDIR/seed.iso"
-SEED=$(xe vdi-create sr-uuid="$SR" name-label="$VM_NAME cloud-init" type=user virtual-size=10MiB)
+SEED=$(xe vdi-create sr-uuid="$SR" name-label="$VM_NAME cloud-init" type=user virtual-size=64MiB)
 CREATED_VDIS+=("$SEED")
 xe vdi-import uuid="$SEED" filename="$TMPDIR/seed.iso" format=raw
 
+echo "[3/6] Creating and starting VM $VM_NAME"
 VM=$(xe vm-install template="Other install media" new-name-label="$VM_NAME" sr-uuid="$SR")
 xe vm-param-set uuid="$VM" name-description="Xen Orchestra from sources, deployed with xo-remote-deploy.sh"
 
@@ -478,7 +482,7 @@ xe vif-create vm-uuid="$VM" network-uuid="$XO_VM_NETWORK" device=0 >/dev/null
 xe vm-param-remove uuid="$VM" param-name=HVM-boot-params param-key=order 2>/dev/null || true
 xe vm-param-set uuid="$VM" HVM-boot-params:order=c
 
-echo "Starting VM $VM_NAME ($VM)..."
+echo "  VM $VM created with ${VM_CPUS} vCPU, ${VM_MEMORY} MiB memory and ${VM_DISK} GiB disk, starting it"
 xe vm-start uuid="$VM"
 
 # VM is kept from this point on even if installation fails, to allow troubleshooting
@@ -486,11 +490,12 @@ trap - ERR
 set +e
 rm -rf "$TMPDIR"
 
-echo "Waiting for Xen Orchestra installation to finish. This takes 10-20 minutes, timeout is $WAIT_TIMEOUT minutes"
+echo "[4/6] Booting VM and running cloud-init (1-3 minutes)"
 
 status=""
 step=""
 vm_ip=""
+stage=4
 start=$SECONDS
 last_output=$SECONDS
 deadline=$((SECONDS + WAIT_TIMEOUT * 60))
@@ -499,28 +504,35 @@ while [[ "$SECONDS" -lt "$deadline" ]]; do
     current=$(xenstore-read "/local/domain/$domid/data/xo-ip" 2>/dev/null)
     if [[ -n "$current" ]] && [[ "$current" != "$vm_ip" ]]; then
         vm_ip="$current"
-        echo "$(date +%H:%M:%S) VM address: $vm_ip"
-        last_output=$SECONDS
-    fi
-    current=$(xenstore-read "/local/domain/$domid/data/xo-step" 2>/dev/null)
-    if [[ -n "$current" ]] && [[ "$current" != "$step" ]]; then
-        step="$current"
-        echo "$(date +%H:%M:%S)   $step"
+        echo "$(date +%H:%M:%S)   VM address: $vm_ip"
         last_output=$SECONDS
     fi
     current=$(xenstore-read "/local/domain/$domid/data/xo-install" 2>/dev/null)
-    if [[ -n "$current" ]] && [[ "$current" != "$status" ]]; then
-        status="$current"
-        echo "$(date +%H:%M:%S) VM reports: $status"
+    if [[ -n "$current" ]] && [[ "$stage" -lt 5 ]]; then
+        stage=5
+        echo "[5/6] Installing dependencies: packages, node.js and yarn (3-6 minutes)"
         last_output=$SECONDS
+    fi
+    new_status="$current"
+    current=$(xenstore-read "/local/domain/$domid/data/xo-step" 2>/dev/null)
+    if [[ -n "$current" ]] && [[ "$current" != "$step" ]]; then
+        step="$current"
+        if [[ "$step" == *"Running installation"* ]] && [[ "$stage" -lt 6 ]]; then
+            stage=6
+            echo "[6/6] Building and starting Xen Orchestra (about 10 minutes)"
+        fi
+        echo "$(date +%H:%M:%S)   $step"
+        last_output=$SECONDS
+    fi
+    if [[ "$new_status" == "done" ]] || [[ "$new_status" == "failed" ]]; then
+        status="$new_status"
+        echo "$(date +%H:%M:%S) Installation $status"
+    elif [[ -n "$new_status" ]]; then
+        status="$new_status"
     fi
     # some steps take several minutes without output, show that things are still progressing
     if [[ $((SECONDS - last_output)) -ge 60 ]]; then
-        if [[ -z "$status" ]]; then
-            echo "$(date +%H:%M:%S) Waiting for VM to boot and cloud-init to install packages ($(((SECONDS - start) / 60)) min elapsed)"
-        else
-            echo "$(date +%H:%M:%S)   ...still working ($(((SECONDS - start) / 60)) min elapsed)"
-        fi
+        echo "$(date +%H:%M:%S)   ...still working ($(((SECONDS - start) / 60)) min elapsed)"
         last_output=$SECONDS
     fi
     if [[ "$status" == "done" ]] || [[ "$status" == "failed" ]]; then
@@ -554,7 +566,7 @@ function BuildSeed {
     [[ -n "$SSH_KEY" ]] && pubkey=$(cat "$SSH_KEY")
 
     VM_NAME="$VM_NAME" VM_IP="$VM_IP" VM_NETMASK="$VM_NETMASK" VM_GATEWAY="$VM_GATEWAY" VM_DNS="$VM_DNS" \
-        VM_PASSWORD="$VM_PASSWORD" PUBKEY="$pubkey" XO_CONFIG="$XO_CONFIG" XO_SCRIPT="$SCRIPT_DIR/xo-install.sh" \
+        VM_PASSWORD="$VM_PASSWORD" PUBKEY="$pubkey" XO_CONFIG="$XO_CONFIG" XO_SCRIPT="$SCRIPT_DIR/xo-install.sh" GUEST_AGENT="$GUEST_AGENT" \
         python3 - <<'PYEOF'
 import base64, gzip, json, os, struct, uuid
 
@@ -571,10 +583,15 @@ report() {
     echo "xo-installer: $1=$2"
     xenstore-write "data/$1" "$2" >/dev/null 2>&1 || true
 }
+echo 'DPkg::Lock::Timeout "600";' >/etc/apt/apt.conf.d/90xo-lock-timeout
+# guest agent reports ip-address, memory etc. to XCP-ng. package comes from the host's guest tools ISO
+if [[ -f /opt/xo-installer/guest-agent.deb ]]; then
+    apt-get install -y /opt/xo-installer/guest-agent.deb >/dev/null 2>&1 && echo "xo-installer: guest agent installed"
+else
+    apt-get install -y xe-guest-utilities >/dev/null 2>&1 || true
+fi
 report xo-ip "$(hostname -I | awk '{print $1}')"
 report xo-install installing
-echo 'DPkg::Lock::Timeout "600";' >/etc/apt/apt.conf.d/90xo-lock-timeout
-apt-get install -y xe-guest-utilities >/dev/null 2>&1 || apt-get install -y xen-guest-agent >/dev/null 2>&1 || true
 cd /opt/xo-installer || exit 1
 ./xo-install.sh --install >/var/log/xo-install.log 2>&1 &
 pid=$!
@@ -625,6 +642,10 @@ userdata = {
     ],
     "runcmd": [["bash", "/opt/xo-installer/run.sh"]],
 }
+if env["GUEST_AGENT"]:
+    with open(env["GUEST_AGENT"], "rb") as f:
+        userdata["write_files"].append({"path": "/opt/xo-installer/guest-agent.deb", "encoding": "b64",
+                                        "content": base64.b64encode(f.read()).decode()})
 if env["VM_PASSWORD"]:
     userdata["ssh_pwauth"] = True
 
@@ -699,9 +720,11 @@ PYEOF
 function SettingsScript {
     local var
     for var in NET_NAME NET_VLAN NET_PIF NET_EXISTING VM_NAME VM_SR VM_CPUS VM_MEMORY VM_DISK WAIT_TIMEOUT \
-        IMAGE_URL IMAGE_SUMS IMAGE_SUM_ALGO IMAGE_VDI SEED_B64; do
+        IMAGE_URL IMAGE_SUMS IMAGE_SUM_ALGO IMAGE_VDI VM_OS STAGE_NET; do
         printf 'export %s=%q\n' "$var" "${!var}"
     done
+    # not exported, environment variables are limited to 128KiB each which the seed may exceed
+    printf 'SEED_B64=%q\n' "$SEED_B64"
 }
 
 # legacy mode: settings for xo-vm-import.sh and the script itself
@@ -788,9 +811,44 @@ function UploadConvertedImage {
     fi
 }
 
+# Debian doesn't package a Xen guest agent, so take the one shipped in host's guest tools ISO
+function FetchGuestAgent {
+    GUEST_AGENT="$SSH_CTRL_DIR/guest-agent.deb"
+    # shellcheck disable=SC2016
+    "${SSH_CMD[@]}" "$TARGET" '
+        iso=$(ls /opt/xensource/packages/iso/*tools*.iso 2>/dev/null | head -n 1)
+        [ -n "$iso" ] || exit 0
+        mnt=$(mktemp -d)
+        if mount -o loop,ro "$iso" "$mnt" >/dev/null 2>&1; then
+            deb=$(ls "$mnt"/Linux/*guest*amd64.deb 2>/dev/null | head -n 1)
+            [ -n "$deb" ] && cat "$deb"
+            umount "$mnt"
+        fi
+        rmdir "$mnt"' >"$GUEST_AGENT" 2>/dev/null
+    if [[ ! -s "$GUEST_AGENT" ]]; then
+        GUEST_AGENT=""
+        echo "  Guest agent package not found on host, XCP-ng won't show VM ip-address until one is installed"
+    else
+        echo "  Using guest agent from host guest tools ISO"
+    fi
+}
+
 function Deploy {
 
+    if [[ "$PRINT_ONLY" != "true" ]]; then
+        SSHSetup
+        echo "Connecting to $TARGET..."
+    fi
+
     if [[ "$USE_PREBUILT" != "true" ]]; then
+        # Ubuntu image is prepared locally before network setup on the host
+        # shellcheck disable=SC2034
+        if [[ "$VM_OS" == ubuntu* ]]; then
+            STAGE_NET=2
+        else
+            STAGE_NET=1
+        fi
+        [[ "$PRINT_ONLY" != "true" ]] && FetchGuestAgent
         # shellcheck disable=SC2034
         SEED_B64=$(BuildSeed) || {
             echo "Failed to build cloud-init seed"
@@ -803,11 +861,8 @@ function Deploy {
         exit 0
     fi
 
-    SSHSetup
-
-    echo "Connecting to $TARGET..."
-
     if [[ "$USE_PREBUILT" != "true" ]] && [[ "$VM_OS" == ubuntu* ]]; then
+        echo "[1/6] Downloading, converting and uploading $VM_OS image"
         UploadConvertedImage
     fi
 
