@@ -422,9 +422,11 @@ class InstallerUpdates {
 
   // ---------------------------------------------------------------- http
 
-  // only admins with a valid XO session get access
+  // only admins with a valid XO session get access. xo-server's sign in sets the session in the token cookie,
+  // authenticationToken is what older versions used
   async _authorize(req) {
-    const token = parseCookies(req.headers.cookie).authenticationToken
+    const cookies = parseCookies(req.headers.cookie)
+    const token = cookies.token ?? cookies.authenticationToken
     if (!token) {
       return false
     }
@@ -449,8 +451,15 @@ class InstallerUpdates {
     }
   }
 
-  async _guard(req, res, { mutating = false } = {}) {
+  async _guard(req, res, { mutating = false, page = false } = {}) {
     if (!(await this._authorize(req))) {
+      if (page) {
+        // not signed in: go to the sign in page, which redirects to Xen Orchestra home afterwards
+        res.statusCode = 302
+        res.setHeader('location', '/signin')
+        res.end()
+        return false
+      }
       res.statusCode = 403
       res.setHeader('content-type', 'text/plain')
       res.end('Sign in to Xen Orchestra as an admin first')
@@ -530,7 +539,7 @@ class InstallerUpdates {
   }
 
   async _page(req, res) {
-    if (!(await this._guard(req, res))) return
+    if (!(await this._guard(req, res, { page: true }))) return
     res.setHeader('content-type', 'text/html; charset=utf-8')
     return PAGE
   }

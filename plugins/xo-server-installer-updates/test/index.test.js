@@ -72,7 +72,8 @@ function fakeXo() {
 // emulates xo-server's dispatch of registered http handlers
 async function request(url, { method = 'GET', token, origin, host = 'xo.local' } = {}) {
   const headers = { host }
-  if (token) headers.cookie = `foo=bar; authenticationToken=${token}`
+  // xo-server's sign in stores the session in the token cookie
+  if (token) headers.cookie = `foo=bar; token=${token}`
   if (origin) headers.origin = origin
   const res = {
     statusCode: 200,
@@ -251,10 +252,16 @@ test('lists builds newest first with the active one marked', async () => {
 
 test('status page and endpoints require an admin session', async () => {
   await plugin.instance.load()
-  for (const p of ['/installer-updates', '/installer-updates/status', '/installer-updates/app.js']) {
+  for (const p of ['/installer-updates/status', '/installer-updates/app.js']) {
     assert.equal((await request(p)).statusCode, 403)
     assert.equal((await request(p, { token: 'user-token' })).statusCode, 403)
     assert.equal((await request(p, { token: 'bad' })).statusCode, 403)
+  }
+  // page sends to sign in instead
+  for (const token of [undefined, 'user-token', 'bad']) {
+    const res = await request('/installer-updates', { token })
+    assert.equal(res.statusCode, 302)
+    assert.equal(res.headers.location, '/signin')
   }
   const page = await request('/installer-updates', admin)
   assert.equal(page.statusCode, 200)
