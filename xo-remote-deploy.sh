@@ -493,15 +493,15 @@ step=""
 deadline=$((SECONDS + WAIT_TIMEOUT * 60))
 while [[ "$SECONDS" -lt "$deadline" ]]; do
     domid=$(xe vm-param-get uuid="$VM" param-name=dom-id 2>/dev/null)
-    current=$(xenstore-read "/local/domain/$domid/data/xo-install" 2>/dev/null)
-    if [[ -n "$current" ]] && [[ "$current" != "$status" ]]; then
-        status="$current"
-        echo "$(date +%H:%M:%S) VM reports: $status"
-    fi
     current=$(xenstore-read "/local/domain/$domid/data/xo-step" 2>/dev/null)
     if [[ -n "$current" ]] && [[ "$current" != "$step" ]]; then
         step="$current"
         echo "$(date +%H:%M:%S)   $step"
+    fi
+    current=$(xenstore-read "/local/domain/$domid/data/xo-install" 2>/dev/null)
+    if [[ -n "$current" ]] && [[ "$current" != "$status" ]]; then
+        status="$current"
+        echo "$(date +%H:%M:%S) VM reports: $status"
     fi
     if [[ "$status" == "done" ]] || [[ "$status" == "failed" ]]; then
         break
