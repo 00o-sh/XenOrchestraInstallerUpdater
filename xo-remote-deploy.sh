@@ -614,15 +614,15 @@ function BuildSeed {
     [[ -n "$SSH_KEY" ]] && pubkey=$(cat "$SSH_KEY")
 
     VM_NAME="$VM_NAME" VM_IP="$VM_IP" VM_NETMASK="$VM_NETMASK" VM_GATEWAY="$VM_GATEWAY" VM_DNS="$VM_DNS" \
-        VM_PASSWORD="$VM_PASSWORD" PUBKEY="$pubkey" XO_CONFIG="$XO_CONFIG" XO_SCRIPT="$SCRIPT_DIR/xo-install.sh" GUEST_AGENT="$GUEST_AGENT" \
+        VM_PASSWORD="$VM_PASSWORD" PUBKEY="$pubkey" XO_CONFIG="$XO_CONFIG" XO_SCRIPT="$SCRIPT_DIR/xo-install.sh" GUEST_AGENT="$GUEST_AGENT" PLUGINS_DIR="$SCRIPT_DIR/plugins" \
         python3 - <<'PYEOF'
 import base64, gzip, json, os, struct, uuid
 
 env = os.environ
 
-def gzb64(path, extra=b""):
+def gzb64(path, extra=b"", prefix=b""):
     with open(path, "rb") as f:
-        return base64.b64encode(gzip.compress(f.read() + extra)).decode()
+        return base64.b64encode(gzip.compress(prefix + f.read() + extra)).decode()
 
 # runs inside the VM. reports progress to xenstore where the host script reads it
 run_sh = r"""#!/bin/bash
@@ -685,11 +685,22 @@ userdata = {
          "content": gzb64(env["XO_SCRIPT"])},
         # self upgrade needs a git checkout of upstream repository which isn't the case here
         {"path": "/opt/xo-installer/xo-install.cfg", "encoding": "gz+b64", "permissions": "0600",
-         "content": gzb64(env["XO_CONFIG"], b"\nSELFUPGRADE=false\n")},
+         "content": gzb64(env["XO_CONFIG"], b"\nSELFUPGRADE=false\n",
+                          # update plugin is enabled unless the config sets BUNDLED_PLUGINS itself
+                          b'BUNDLED_PLUGINS="xo-server-installer-updates"\n')},
         {"path": "/opt/xo-installer/run.sh", "permissions": "0755", "content": run_sh},
     ],
     "runcmd": [["bash", "/opt/xo-installer/run.sh"]],
 }
+# plugins bundled in this repository, xo-install.sh adds them to the build according to BUNDLED_PLUGINS
+plugins_dir = env["PLUGINS_DIR"]
+if os.path.isdir(plugins_dir):
+    for root, dirs, names in os.walk(plugins_dir):
+        dirs[:] = [d for d in dirs if d not in ("test", "node_modules")]
+        for name in names:
+            src = os.path.join(root, name)
+            userdata["write_files"].append({"path": "/opt/xo-installer/plugins/" + os.path.relpath(src, plugins_dir),
+                                            "encoding": "gz+b64", "content": gzb64(src)})
 if env["GUEST_AGENT"]:
     with open(env["GUEST_AGENT"], "rb") as f:
         userdata["write_files"].append({"path": "/opt/xo-installer/guest-agent.deb", "encoding": "b64",

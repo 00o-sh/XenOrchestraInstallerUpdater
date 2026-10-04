@@ -36,6 +36,7 @@ CONFIGPATH_PROXY=$(getent passwd root | cut -d: -f6)
 CONFIGUPDATE=${CONFIGUPDATE:-"true"}
 PLUGINS="${PLUGINS:-"all"}"
 ADDITIONAL_PLUGINS="${ADDITIONAL_PLUGINS:-"none"}"
+BUNDLED_PLUGINS="${BUNDLED_PLUGINS:-"none"}"
 REPOSITORY="${REPOSITORY:-"https://github.com/vatesfr/xen-orchestra"}"
 OS_CHECK="${OS_CHECK:-"true"}"
 ARCH_CHECK="${ARCH_CHECK:-"true"}"
@@ -500,6 +501,37 @@ function InstallAdditionalXOPlugins {
 }
 
 # symlink plugins in place based on what is set in xo-install.cfg
+# plugins shipped in plugins/ directory of this repository are added to the build the same way as 3rd party plugins
+function InstallBundledXOPlugins {
+
+    set -euo pipefail
+
+    trap ErrorHandling ERR INT
+
+    if [[ -z "$BUNDLED_PLUGINS" ]] || [[ "$BUNDLED_PLUGINS" == "none" ]]; then
+        return 0
+    fi
+
+    echo
+    printprog "Adding bundled plugin(s)"
+
+    local BUNDLED_PLUGIN
+    IFS=',' read -ra BUNDLED_PLUGIN <<<"$BUNDLED_PLUGINS"
+    for x in "${BUNDLED_PLUGIN[@]}"; do
+        if [[ ! -f "$SCRIPT_DIR/plugins/$x/package.json" ]]; then
+            echo
+            printfail "$x not found in $SCRIPT_DIR/plugins, skipping.."
+            continue
+        fi
+        local PLUGIN_DIR="$INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/$x"
+        runcmd "rm -rf \"$PLUGIN_DIR\" && cp -r \"$SCRIPT_DIR/plugins/$x\" \"$PLUGIN_DIR\" && rm -rf \"$PLUGIN_DIR/test\""
+        # lets plugin find this script and installation
+        printf '{ "scriptDir": "%s", "installDir": "%s" }\n' "$SCRIPT_DIR" "$INSTALLDIR" >"$PLUGIN_DIR/installer.json"
+    done
+
+    printok "Adding bundled plugin(s)"
+}
+
 function InstallXOPlugins {
 
     set -euo pipefail
@@ -714,6 +746,9 @@ function InstallXO {
 
     # Fetch 3rd party plugins source code
     InstallAdditionalXOPlugins
+
+    # Add plugins shipped in this repository
+    InstallBundledXOPlugins
 
     echo
     printinfo "xo-server and xo-web build takes quite a while. Grab a cup of coffee and lay back"

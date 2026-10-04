@@ -1,0 +1,20 @@
+{
+  "name": "xo-server-installer-updates",
+  "version": "0.1.0",
+  "private": true,
+  "license": "GPL-3.0",
+  "description": "Checks for Xen Orchestra source updates and applies them with XenOrchestraInstallerUpdater",
+  "keywords": [
+    "xen-orchestra",
+    "xo-server",
+    "plugin",
+    "updates"
+  ],
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
