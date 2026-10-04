@@ -42,6 +42,12 @@ exports.configurationSchema = {
       maximum: 23,
       default: 3,
     },
+    banner: {
+      title: 'Show banner in Xen Orchestra',
+      description: 'Admins see a banner at the top of Xen Orchestra when an update is available, running or has failed',
+      type: 'boolean',
+      default: true,
+    },
     emailTo: {
       title: 'Email recipients',
       description: 'Notified of new updates and of finished updates and rollbacks. Needs the transport-email plugin',
@@ -145,9 +151,12 @@ class InstallerUpdates {
       '/switch': this._switchHandler,
       '/app.js': this._assetHandler('application/javascript', JS),
       '/app.css': this._assetHandler('text/css', CSS),
+      '/summary': this._summaryHandler,
+      '/banner.js': this._assetHandler('application/javascript', BANNER_JS),
     })) {
       this._unregister.push(await this._xo.registerHttpRequestHandler(BASE_PATH + suffix, handler.bind(this)))
     }
+    await this._registerBanner()
     this._loaded = true
     this._schedule()
     // after an update xo-server is restarted, record how the update went and check again shortly after start
@@ -497,6 +506,73 @@ class InstallerUpdates {
     }
   }
 
+  // ---------------------------------------------------------------- banner
+
+  // Xen Orchestra's pages are served with the banner script added. Both web UIs use hash routing, so their index
+  // pages are only requested on these paths. Nothing is changed on disk, anyone but a signed in admin gets the
+  // untouched page through xo-server's usual handling.
+  async _registerBanner() {
+    let routes
+    try {
+      routes = Object.values((await this._xo.config?.getGuiRoutes?.()) ?? {})
+    } catch {
+      return
+    }
+    const paths = new Map()
+    for (const route of routes) {
+      // only the web UIs, recognized the same way xo-server does, not docs or other mounts
+      if (route?.url === undefined || !/(?:xo-web|@xen-orchestra\/web)\/dist/.test(route.path ?? '')) continue
+      const url = route.url.replace(/\/$/, '')
+      for (const p of url === '' ? ['/', '/index.html'] : [url + '/', url + '/index.html']) {
+        if (!paths.has(p)) paths.set(p, route.path)
+      }
+    }
+    for (const [p, dir] of paths) {
+      try {
+        this._unregister.push(
+          await this._xo.registerHttpRequestHandler(p, (req, res, data, next) => this._bannerPage(req, res, next, dir))
+        )
+      } catch {
+        // another plugin handles this path already
+      }
+    }
+  }
+
+  async _bannerPage(req, res, next, dir) {
+    if (this._configuration.banner === false || req.method !== 'GET' || !(await this._authorize(req))) {
+      return next()
+    }
+    let html
+    try {
+      html = await fs.readFile(path.join(dir, 'index.html'), 'utf8')
+    } catch {
+      return next()
+    }
+    const tag = `<script src="${BASE_PATH}/banner.js" defer></script>`
+    html = html.includes('</head>') ? html.replace('</head>', tag + '</head>') : html + tag
+    res.setHeader('content-type', 'text/html; charset=utf-8')
+    res.setHeader('cache-control', 'no-cache')
+    return html
+  }
+
+  // small status for the banner
+  async _summaryHandler(req, res) {
+    if (!(await this._guard(req, res))) return
+    return this._json(res, async () => {
+      await this._reconcile()
+      const { state, branch, installed, latest, changes } = this._status
+      return {
+        state,
+        branch,
+        installed,
+        latest,
+        count: changes?.count,
+        running: await this._running(),
+        operation: this._state.operation,
+      }
+    })
+  }
+
   async _statusHandler(req, res) {
     if (!(await this._guard(req, res))) return
     return this._json(res, () => this._statusJson())
@@ -555,6 +631,7 @@ const PAGE = `<!doctype html>
 </head>
 <body>
 <main>
+  <p class="back"><a href="/">← Xen Orchestra</a></p>
   <h1>Xen Orchestra updates</h1>
   <div class="card">
     <dl id="info"><dt>Status</dt><dd>loading...</dd></dl>
@@ -583,6 +660,7 @@ body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); c
 main { max-width: 820px; margin: 0 auto; padding: 24px 16px; }
 .card { background: var(--card); border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
 h1 { font-size: 22px; margin: 0 0 16px; }
+.back { margin: 0 0 8px; font-size: 14px; } .back a { text-decoration: none; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 16px; }
 #operation { margin: 8px 0 0; }
 dt, .muted { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
@@ -695,6 +773,99 @@ $('builds').onclick = e => {
 }
 refresh()
 setInterval(refresh, 5000)
+`
+
+// added to Xen Orchestra's pages, shows a banner when there is something to know. Styles are set through the DOM
+// because the Content-Security-Policy blocks inline style elements
+const BANNER_JS = `(() => {
+  if (window.__xoInstallerUpdates) return
+  window.__xoInstallerUpdates = true
+  const base = '${BASE_PATH}'
+  const HEIGHT = 36
+  const KEY = 'xo-installer-updates-dismissed'
+  let bar
+  let shown
+
+  const css = (el, style) => Object.assign(el.style, style)
+
+  function message(s) {
+    if (s.running) {
+      return { key: undefined, color: '#c27b00', text: 'Xen Orchestra update is running. Xen Orchestra restarts when it finishes.' }
+    }
+    const op = s.operation
+    if (op && op.finishedAt && !op.success && Date.now() - new Date(op.finishedAt) < 7 * 24 * 3600e3) {
+      return { key: 'failed:' + op.startedAt, color: '#c0392b', text: (op.type === 'rollback' ? 'Switching build' : 'Xen Orchestra update') + ' failed.', link: 'See the log' }
+    }
+    if (s.state === 'update-available') {
+      return { key: 'update:' + s.latest, color: '#6d4bd6', text: 'Xen Orchestra update available' + (s.count ? ': ' + s.count + ' new commit' + (s.count === 1 ? '' : 's') : '') + ' on ' + s.branch + '.', link: 'View and update' }
+    }
+  }
+
+  function hide() {
+    if (bar) {
+      bar.remove()
+      bar = undefined
+      document.documentElement.style.removeProperty('padding-top')
+    }
+    shown = undefined
+  }
+
+  function show(m) {
+    if (shown === JSON.stringify(m)) return
+    hide()
+    shown = JSON.stringify(m)
+    bar = document.createElement('div')
+    bar.setAttribute('role', 'status')
+    css(bar, { position: 'fixed', top: '0', left: '0', right: '0', height: HEIGHT + 'px', zIndex: '2147483000', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px', padding: '0 44px', background: m.color, color: '#fff', font: '14px/1.2 system-ui, sans-serif', boxSizing: 'border-box', boxShadow: '0 1px 4px rgba(0,0,0,.25)' })
+    const text = document.createElement('span')
+    text.textContent = m.text
+    css(text, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' })
+    bar.append(text)
+    if (m.link) {
+      const a = document.createElement('a')
+      a.href = base
+      a.textContent = m.link
+      css(a, { color: '#fff', fontWeight: '600', textDecoration: 'underline', whiteSpace: 'nowrap' })
+      bar.append(a)
+    }
+    if (m.key) {
+      const close = document.createElement('button')
+      close.type = 'button'
+      close.textContent = '×'
+      close.title = 'Dismiss until something changes'
+      close.setAttribute('aria-label', 'Dismiss')
+      css(close, { position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: '0', color: '#fff', font: '22px/1 system-ui, sans-serif', cursor: 'pointer', padding: '4px 8px' })
+      close.onclick = () => {
+        try { localStorage.setItem(KEY, m.key) } catch {}
+        hide()
+      }
+      bar.append(close)
+    }
+    document.body.append(bar)
+    // keep Xen Orchestra's own header visible below the banner
+    document.documentElement.style.setProperty('padding-top', HEIGHT + 'px')
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch(base + '/summary', { cache: 'no-store' })
+      if (!res.ok) return hide()
+      const m = message(await res.json())
+      let dismissed
+      try { dismissed = localStorage.getItem(KEY) } catch {}
+      if (m === undefined || (m.key !== undefined && m.key === dismissed)) return hide()
+      show(m)
+    } catch {
+      // xo-server restarting, keep what is shown
+    }
+  }
+
+  const start = () => {
+    poll()
+    setInterval(poll, 60e3)
+  }
+  document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', start) : start()
+})()
 `
 
 // installer.json is written next to this file by xo-install.sh

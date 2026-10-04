@@ -48,9 +48,10 @@ function writeInstaller(exitCode = 0) {
   )
 }
 
-// fake xo-server: http handlers, authentication and email
-function fakeXo() {
+// fake xo-server: http handlers, authentication, email and web UI locations
+function fakeXo(guiRoutes) {
   return {
+    config: guiRoutes && { getGuiRoutes: async () => guiRoutes },
     handlers: {},
     emails: [],
     async registerHttpRequestHandler(p, fn) {
@@ -85,9 +86,12 @@ async function request(url, { method = 'GET', token, origin, host = 'xo.local' }
     end(body) {
       this.body = body
     },
+    nextCalled: false,
   }
   const p = url.split('?')[0]
-  const result = await xo.handlers[p]({ method, headers, url, path: p }, res, undefined, () => {})
+  const result = await xo.handlers[p]({ method, headers, url, path: p }, res, undefined, () => {
+    res.nextCalled = true
+  })
   if (result != null) res.end(result)
   return res
 }
@@ -402,7 +406,7 @@ test('automatic update runs once a day at the configured hour when an update exi
 
 test('unload removes http handlers', async () => {
   await plugin.instance.load()
-  assert.equal(Object.keys(xo.handlers).length, 7)
+  assert.equal(Object.keys(xo.handlers).length, 9)
   plugin.instance.unload()
   assert.equal(Object.keys(xo.handlers).length, 0)
 })
@@ -412,4 +416,65 @@ test('default export creates an instance like xo-server does', () => {
   assert.equal(typeof instance.load, 'function')
   assert.equal(typeof instance.configure, 'function')
   assert.ok(plugin.configurationSchema.properties.autoUpdateHour)
+})
+
+test('banner script is added to Xen Orchestra pages for admins only', async () => {
+  const v5 = path.join(tmp, 'packages', 'xo-web', 'dist')
+  const v6 = path.join(tmp, '@xen-orchestra', 'web', 'dist')
+  const docs = path.join(tmp, 'docs', 'build-embed')
+  fs.mkdirSync(v5, { recursive: true })
+  fs.mkdirSync(v6, { recursive: true })
+  fs.writeFileSync(path.join(v5, 'index.html'), '<html><head><title>v5</title></head><body></body></html>')
+  fs.writeFileSync(path.join(v6, 'index.html'), '<html><head><title>v6</title></head><body></body></html>')
+  xo = fakeXo({
+    v5: { url: '/v5', path: v5 },
+    v6: { url: '/v6', path: v6 },
+    xoDocs: { url: '/docs', path: docs },
+    xoRobotsTxt: { url: '/robots.txt', path: '/x/robots.txt' },
+    default: { url: '/', path: v6 },
+  })
+  plugin.instance = newInstance()
+  await plugin.instance.load()
+  for (const p of ['/', '/index.html', '/v5/', '/v5/index.html', '/v6/', '/v6/index.html']) {
+    assert.ok(xo.handlers[p], `${p} handled`)
+  }
+  assert.equal(xo.handlers['/docs/'], undefined)
+  assert.equal(xo.handlers['/robots.txt/'], undefined)
+
+  // anyone but an admin gets xo-server's usual handling, including its sign in redirect
+  for (const options of [{}, { token: 'user-token' }, { token: 'bad' }, { ...admin, method: 'POST' }]) {
+    const res = await request('/', options)
+    assert.equal(res.nextCalled, true)
+    assert.equal(res.body, undefined)
+  }
+
+  let res = await request('/', admin)
+  assert.equal(res.nextCalled, false)
+  assert.equal(res.body, '<html><head><title>v6</title><script src="/installer-updates/banner.js" defer></script></head><body></body></html>')
+  res = await request('/v5/', admin)
+  assert.match(res.body, /<title>v5<\/title><script src="\/installer-updates\/banner.js" defer><\/script><\/head>/)
+
+  // disabled in settings
+  plugin.instance.configure({ banner: false })
+  assert.equal((await request('/', admin)).nextCalled, true)
+
+  // missing page falls back to xo-server
+  plugin.instance.configure({})
+  fs.rmSync(path.join(v5, 'index.html'))
+  assert.equal((await request('/v5/', admin)).nextCalled, true)
+
+  const js = await request('/installer-updates/banner.js', admin)
+  assert.doesNotThrow(() => new Function(js.body))
+})
+
+test('summary for the banner', async () => {
+  await plugin.instance.load()
+  commit('second')
+  await plugin.instance.check()
+  assert.equal((await request('/installer-updates/summary', { token: 'user-token' })).statusCode, 403)
+  const summary = JSON.parse((await request('/installer-updates/summary', admin)).body)
+  assert.equal(summary.state, 'update-available')
+  assert.equal(summary.branch, 'master')
+  assert.equal(summary.running, false)
+  assert.equal(summary.latest.length, 40)
 })

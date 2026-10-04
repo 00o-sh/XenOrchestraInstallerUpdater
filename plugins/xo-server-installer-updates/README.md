@@ -5,6 +5,7 @@ xo-server plugin which keeps a Xen Orchestra installation made with `xo-install.
 - Checks periodically whether the `BRANCH` of `REPOSITORY` configured in `xo-install.cfg` has a newer commit than the installed one
 - Optionally applies updates automatically once a day at a configured hour
 - Emails the configured recipients about new updates and finished updates and rollbacks (needs the `transport-email` plugin)
+- Banner at the top of Xen Orchestra (v5 and v6 UIs) for admins when an update is available, running or failed, linking to the status page. It can be dismissed until something changes and turned off in the plugin settings. Xen Orchestra's own files are not modified: the plugin serves its index page with the banner script added, only to signed in admins
 - Status page at `https://<xo-address>/installer-updates` for admins:
   - installed and latest commit, list of new commits, **Check now** and **Update now**
   - result of the last update or rollback and its log
