@@ -542,6 +542,7 @@ echo "[4/6] Booting VM and running cloud-init (1-3 minutes)"
 
 status=""
 step=""
+detail=""
 vm_ip=""
 stage=4
 start=$SECONDS
@@ -565,26 +566,27 @@ while [[ "$SECONDS" -lt "$deadline" ]]; do
     current=$(xenstore-read "/local/domain/$domid/data/xo-step" 2>/dev/null)
     if [[ -n "$current" ]] && [[ "$current" != "$step" ]]; then
         step="$current"
-        if [[ "$step" == *"Running installation"* ]] && [[ "$stage" -lt 6 ]]; then
+        if [[ "$step" == *"Fetching Xen Orchestra source code"* || "$step" == *"Running installation"* ]] && [[ "$stage" -lt 6 ]]; then
             stage=6
             echo "[6/6] Building and starting Xen Orchestra (about 10 minutes)"
         fi
         echo "$(date +%H:%M:%S)   $step"
         last_output=$SECONDS
     fi
+    detail=$(xenstore-read "/local/domain/$domid/data/xo-detail" 2>/dev/null)
     if [[ "$new_status" == "done" ]] || [[ "$new_status" == "failed" ]]; then
         status="$new_status"
         echo "$(date +%H:%M:%S) Installation $status"
     elif [[ -n "$new_status" ]]; then
         status="$new_status"
     fi
-    # some steps take several minutes without output, show that things are still progressing
-    if [[ $((SECONDS - last_output)) -ge 60 ]]; then
-        echo "$(date +%H:%M:%S)   ...still working ($(((SECONDS - start) / 60)) min elapsed)"
-        last_output=$SECONDS
-    fi
     if [[ "$status" == "done" ]] || [[ "$status" == "failed" ]]; then
         break
+    fi
+    # some steps take several minutes without output, show that things are still progressing
+    if [[ $((SECONDS - last_output)) -ge 60 ]]; then
+        echo "$(date +%H:%M:%S)   ...still working ($(((SECONDS - start) / 60)) min elapsed)${detail:+, $detail}"
+        last_output=$SECONDS
     fi
     sleep 5
 done
@@ -645,7 +647,16 @@ cd /opt/xo-installer || exit 1
 pid=$!
 # forward latest installer step, e.g. "[ok] Running apt-get update", for the host to show
 last=""
+last_detail=""
 while kill -0 "$pid" 2>/dev/null; do
+    # finer progress from the detailed log: yarn phases and packages being built
+    detail=$(ls -t /opt/xo-installer/logs/xo-install.log-* 2>/dev/null | head -n 1 | xargs -r tail -n 300 |
+        sed 's/\x1b\[[0-9;]*m//g' | grep -E '^\[[0-9]/[0-9]\] |^[@a-zA-Z0-9/._-]+:build: ' | tail -n 1 |
+        sed -E 's/^([@a-zA-Z0-9/._-]+):build: .*/building \1/; s/^\[[0-9]\/[0-9]\] /yarn: /' | cut -c 1-100)
+    if [[ -n "$detail" ]] && [[ "$detail" != "$last_detail" ]]; then
+        xenstore-write data/xo-detail "$detail" >/dev/null 2>&1 || true
+        last_detail="$detail"
+    fi
     step=$(tr '\r' '\n' </var/log/xo-install.log | sed 's/\x1b\[[0-9;]*m//g' | grep '^\[' | tail -n 1 | cut -c 1-200)
     if [[ -n "$step" ]] && [[ "$step" != "$last" ]]; then
         report xo-step "$step"
@@ -936,14 +947,16 @@ function Deploy {
     fi
 
     # script is fed through stdin so nothing needs to be copied to the host
-    local output rc
-    exec 3>&1
-    output=$(
-        RemoteScript | "${SSH_CMD[@]}" "$TARGET" "bash -s" | tee /dev/fd/3
-        exit "${PIPESTATUS[1]}"
-    )
-    rc=$?
-    exec 3>&-
+    # result line for this script is kept out of the output
+    local rc
+    RemoteScript | "${SSH_CMD[@]}" "$TARGET" "bash -s" | while IFS= read -r line; do
+        if [[ "$line" == XO_DEPLOY_RESULT* ]]; then
+            echo "$line" >"$SSH_CTRL_DIR/result"
+        else
+            printf '%s\n' "$line"
+        fi
+    done
+    rc=${PIPESTATUS[1]}
 
     if [[ "$rc" != "0" ]]; then
         # uploaded image may be left behind if failure happened before the host script took it over
@@ -958,7 +971,7 @@ function Deploy {
     [[ "$USE_PREBUILT" == "true" ]] && return 0
 
     local result status ip port
-    result=$(grep '^XO_DEPLOY_RESULT' <<<"$output" | tail -1)
+    result=$(cat "$SSH_CTRL_DIR/result" 2>/dev/null)
     status=$(sed -n 's/.*status=\([^ ]*\).*/\1/p' <<<"$result")
     ip=$(sed -n 's/.*ip=\([^ ]*\).*/\1/p' <<<"$result")
     port=$(sed -n 's/^PORT="\{0,1\}\([0-9]*\)"\{0,1\}.*/\1/p' "$XO_CONFIG" | tail -1)
