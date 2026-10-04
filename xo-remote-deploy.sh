@@ -490,18 +490,38 @@ echo "Waiting for Xen Orchestra installation to finish. This takes 10-20 minutes
 
 status=""
 step=""
+vm_ip=""
+start=$SECONDS
+last_output=$SECONDS
 deadline=$((SECONDS + WAIT_TIMEOUT * 60))
 while [[ "$SECONDS" -lt "$deadline" ]]; do
     domid=$(xe vm-param-get uuid="$VM" param-name=dom-id 2>/dev/null)
+    current=$(xenstore-read "/local/domain/$domid/data/xo-ip" 2>/dev/null)
+    if [[ -n "$current" ]] && [[ "$current" != "$vm_ip" ]]; then
+        vm_ip="$current"
+        echo "$(date +%H:%M:%S) VM address: $vm_ip"
+        last_output=$SECONDS
+    fi
     current=$(xenstore-read "/local/domain/$domid/data/xo-step" 2>/dev/null)
     if [[ -n "$current" ]] && [[ "$current" != "$step" ]]; then
         step="$current"
         echo "$(date +%H:%M:%S)   $step"
+        last_output=$SECONDS
     fi
     current=$(xenstore-read "/local/domain/$domid/data/xo-install" 2>/dev/null)
     if [[ -n "$current" ]] && [[ "$current" != "$status" ]]; then
         status="$current"
         echo "$(date +%H:%M:%S) VM reports: $status"
+        last_output=$SECONDS
+    fi
+    # some steps take several minutes without output, show that things are still progressing
+    if [[ $((SECONDS - last_output)) -ge 60 ]]; then
+        if [[ -z "$status" ]]; then
+            echo "$(date +%H:%M:%S) Waiting for VM to boot and cloud-init to install packages ($(((SECONDS - start) / 60)) min elapsed)"
+        else
+            echo "$(date +%H:%M:%S)   ...still working ($(((SECONDS - start) / 60)) min elapsed)"
+        fi
+        last_output=$SECONDS
     fi
     if [[ "$status" == "done" ]] || [[ "$status" == "failed" ]]; then
         break
