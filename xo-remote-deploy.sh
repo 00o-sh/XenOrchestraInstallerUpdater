@@ -649,11 +649,21 @@ pid=$!
 last=""
 last_detail=""
 while kill -0 "$pid" 2>/dev/null; do
-    # finer progress from the detailed log: yarn phases and packages being built
-    detail=$(ls -t /opt/xo-installer/logs/xo-install.log-* 2>/dev/null | head -n 1 | xargs -r tail -n 300 |
-        sed 's/\x1b\[[0-9;]*m//g' | grep -E '^\[[0-9]/[0-9]\] |^[@a-zA-Z0-9/._-]+:build: ' | tail -n 1 |
-        sed -E 's/^([@a-zA-Z0-9/._-]+):build: .*/building \1/; s/^\[[0-9]\/[0-9]\] /yarn: /' | cut -c 1-100)
-    if [[ -n "$detail" ]] && [[ "$detail" != "$last_detail" ]]; then
+    # finer progress: packages being built by running node processes, turbo hides their output.
+    # otherwise the yarn phase, taken only from output of the command currently running
+    detail=$(for p in $(pgrep -x node); do readlink "/proc/$p/cwd"; done 2>/dev/null |
+        grep -oE '/xo-builds/[^/]+/(packages/[^/]+|@[^/]+/[^/]+)' | sed -E 's#^/xo-builds/[^/]+/(packages/)?##' |
+        sort -u | head -n 3 | paste -sd, - | sed 's/,/, /g')
+    if [[ -n "$detail" ]]; then
+        detail="building $detail"
+    else
+        detail=$(ls -t /opt/xo-installer/logs/xo-install.log-* 2>/dev/null | head -n 1 | xargs -r tail -n 2000 2>/dev/null |
+            awk '/^\+ / {n = 0} {lines[n++] = $0} END {for (i = 0; i < n; i++) print lines[i]}' |
+            sed 's/\x1b\[[0-9;]*m//g' | grep -E '^\[[0-9]/[0-9]\] ' | tail -n 1 |
+            sed -E 's/^\[[0-9]\/[0-9]\] /yarn: /' | cut -c 1-100)
+    fi
+    # empty value clears outdated detail on the host
+    if [[ "$detail" != "$last_detail" ]]; then
         xenstore-write data/xo-detail "$detail" >/dev/null 2>&1 || true
         last_detail="$detail"
     fi
