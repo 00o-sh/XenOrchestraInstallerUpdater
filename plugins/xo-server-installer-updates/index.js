@@ -95,6 +95,8 @@ class InstallerUpdates {
       '/status': this._statusHandler,
       '/check': this._checkHandler,
       '/apply': this._applyHandler,
+      '/app.js': this._assetHandler('application/javascript', JS),
+      '/app.css': this._assetHandler('text/css', CSS),
     })) {
       this._unregister.push(await this._xo.registerHttpRequestHandler(BASE_PATH + suffix, handler.bind(this)))
     }
@@ -330,6 +332,14 @@ class InstallerUpdates {
     }
   }
 
+  _assetHandler(type, content) {
+    return async (req, res) => {
+      if (!(await this._guard(req, res))) return
+      res.setHeader('content-type', `${type}; charset=utf-8`)
+      return content
+    }
+  }
+
   async _page(req, res) {
     if (!(await this._guard(req, res))) return
     res.setHeader('content-type', 'text/html; charset=utf-8')
@@ -343,8 +353,27 @@ const PAGE = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Xen Orchestra updates</title>
-<style>
-  :root { color-scheme: light dark; --fg: #1d1d2b; --bg: #f6f6fa; --card: #fff; --muted: #6b6b80; --accent: #6d4bd6; --ok: #2e8b57; --warn: #c27b00; --err: #c0392b; }
+<link rel="stylesheet" href="${BASE_PATH}/app.css">
+</head>
+<body>
+<main>
+  <h1>Xen Orchestra updates</h1>
+  <div class="card">
+    <dl id="info"><dt>Status</dt><dd>loading...</dd></dl>
+    <p id="message" class="error"></p>
+    <button id="check">Check now</button>
+    <button id="apply" class="primary" disabled>Update now</button>
+  </div>
+  <div class="card" id="changes-card" hidden><strong>Changes</strong><ul id="changes"></ul></div>
+  <div class="card" id="log-card" hidden><strong>Update log</strong><pre id="log"></pre></div>
+</main>
+<script src="${BASE_PATH}/app.js"></script>
+</body>
+</html>
+`
+
+// served as separate files because xo-server's Content-Security-Policy blocks inline scripts
+const CSS = `  :root { color-scheme: light dark; --fg: #1d1d2b; --bg: #f6f6fa; --card: #fff; --muted: #6b6b80; --accent: #6d4bd6; --ok: #2e8b57; --warn: #c27b00; --err: #c0392b; }
   @media (prefers-color-scheme: dark) { :root { --fg: #e8e8f0; --bg: #14141f; --card: #1e1e2d; --muted: #9a9ab0; } }
   body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
   main { max-width: 760px; margin: 0 auto; padding: 24px 16px; }
@@ -360,22 +389,9 @@ const PAGE = `<!doctype html>
   ul { padding-left: 18px; margin: 8px 0 0; } li { margin: 2px 0; }
   pre { white-space: pre-wrap; font-size: 12px; max-height: 360px; overflow: auto; margin: 0; }
   a { color: var(--accent); }
-</style>
-</head>
-<body>
-<main>
-  <h1>Xen Orchestra updates</h1>
-  <div class="card">
-    <dl id="info"><dt>Status</dt><dd>loading...</dd></dl>
-    <p id="message" class="error"></p>
-    <button id="check">Check now</button>
-    <button id="apply" class="primary" disabled>Update now</button>
-  </div>
-  <div class="card" id="changes-card" hidden><strong>Changes</strong><ul id="changes"></ul></div>
-  <div class="card" id="log-card" hidden><strong>Update log</strong><pre id="log"></pre></div>
-</main>
-<script>
-const base = location.pathname.replace(/\\/$/, '')
+`
+
+const JS = `const base = '${BASE_PATH}'
 const $ = id => document.getElementById(id)
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
 const short = s => s ? '<code>' + esc(s.slice(0, 10)) + '</code>' : '-'
@@ -390,7 +406,7 @@ function render(s) {
     '<dt>Latest</dt><dd>' + short(s.latest) + (s.changes && s.changes.count ? ' (' + esc(s.changes.count) + ' new commits)' : '') + '</dd>' +
     '<dt>Source</dt><dd>' + esc(s.repository || '-') + ' <code>' + esc(s.branch || '') + '</code></dd>' +
     '<dt>Last check</dt><dd>' + esc(s.checkedAt ? new Date(s.checkedAt).toLocaleString() : '-') + '</dd>'
-  $('message').textContent = s.error || ''
+  $('message').textContent = s.error || (s.updating ? 'Update running. Xen Orchestra restarts when it finishes and this page reconnects by itself.' : '')
   $('apply').disabled = s.updating || s.state !== 'update-available'
   $('check').disabled = s.updating
   const commits = (s.changes && s.changes.commits) || []
@@ -405,8 +421,12 @@ async function refresh() {
   try {
     const res = await fetch(base + '/status', { cache: 'no-store' })
     if (!res.ok) throw new Error(await res.text())
-    const s = await res.json()
-    if (applying && !s.updating && s.log) applying = false
+    let s = await res.json()
+    // update finished, refresh installed version right away instead of waiting for next scheduled check
+    if (applying && !s.updating) {
+      applying = false
+      s = await post('check').catch(() => s)
+    }
     render(s)
   } catch (e) {
     // xo-server restarts during an update, keep polling until it is back
@@ -428,14 +448,11 @@ $('check').onclick = async () => {
 $('apply').onclick = async () => {
   if (!confirm('Update Xen Orchestra now? It will be unavailable while the new version is built and restarted.')) return
   $('apply').disabled = true
-  try { await post('apply'); applying = true; $('message').textContent = 'Update started' } catch (e) { $('message').textContent = e.message }
+  try { await post('apply'); applying = true } catch (e) { $('message').textContent = e.message }
   refresh()
 }
 refresh()
 setInterval(refresh, 5000)
-</script>
-</body>
-</html>
 `
 
 // installer.json is written next to this file by xo-install.sh

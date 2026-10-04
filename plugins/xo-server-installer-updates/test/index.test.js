@@ -194,6 +194,15 @@ test('status page and endpoints require an admin session', async () => {
   const page = await request('/installer-updates', { token: 'admin-token' })
   assert.equal(page.statusCode, 200)
   assert.match(page.body, /<title>Xen Orchestra updates<\/title>/)
+  // xo-server's Content-Security-Policy blocks inline scripts and styles
+  assert.doesNotMatch(page.body, /<script>|<style>|\son\w+=/)
+
+  const js = await request('/installer-updates/app.js', { token: 'admin-token' })
+  assert.match(js.headers['content-type'], /javascript/)
+  assert.doesNotThrow(() => new Function(js.body))
+  const css = await request('/installer-updates/app.css', { token: 'admin-token' })
+  assert.match(css.headers['content-type'], /text\/css/)
+  assert.equal((await request('/installer-updates/app.js')).statusCode, 403)
 })
 
 test('check and apply need POST from the same origin', async () => {
@@ -235,7 +244,7 @@ test('apply starts xo-install.sh --update in a transient systemd unit once', asy
 
 test('unload removes http handlers', async () => {
   await plugin.instance.load()
-  assert.equal(Object.keys(xo.handlers).length, 4)
+  assert.equal(Object.keys(xo.handlers).length, 6)
   plugin.instance.unload()
   assert.equal(Object.keys(xo.handlers).length, 0)
 })
