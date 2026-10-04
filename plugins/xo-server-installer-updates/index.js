@@ -574,7 +574,8 @@ body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); c
 main { max-width: 820px; margin: 0 auto; padding: 24px 16px; }
 .card { background: var(--card); border-radius: 10px; padding: 18px 20px; margin-bottom: 16px; }
 h1 { font-size: 22px; margin: 0 0 16px; }
-dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 16px; }
+#operation { margin: 8px 0 0; }
 dt, .muted { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
 .muted { font-size: 13px; margin: 4px 0 8px; }
 code { font-size: 13px; }
