@@ -207,6 +207,25 @@ Default username for UI is `admin@admin.net` with password `admin`
 
 SSH is accessible with username `xo` with password `xopass`
 
+#### Remote deploy over SSH
+
+`xo-remote-deploy.sh` runs from your workstation: it connects to the XenServer/XCP-ng pool master over SSH, creates (or reuses) a network for the VM and runs `xo-vm-import.sh` on the host without prompts. Nothing needs to be copied to the host.
+
+```
+# new network "xo-test" tagged with VLAN 42 on eth0, VM gets address from DHCP
+./xo-remote-deploy.sh -H root@xcp-host --vlan 42
+
+# isolated host-internal network, static address required since there is no DHCP
+./xo-remote-deploy.sh -H root@xcp-host --internal --ip 10.10.10.5 --gateway 10.10.10.1
+
+# existing network by name-label
+./xo-remote-deploy.sh -H root@xcp-host --network "Pool-wide network associated with eth0"
+```
+
+See `./xo-remote-deploy.sh --help` for all options. `--print` shows the script that would be run on the host. Extra SSH options can be passed with `SSH_OPTS`, e.g. `SSH_OPTS="-p 2222 -i ~/.ssh/xcp"`.
+
+`xo-vm-import.sh` itself can also be run unattended by setting `XO_VM_NETWORK`, `XO_VM_SR`, `XO_VM_IP` (and `XO_VM_NETMASK`, `XO_VM_GATEWAY`, `XO_VM_DNS` for a static address) and optionally `XO_VM_NAME`.
+
 Remember to change both passwords before putting the VM to actual use.
 
 Xen Orchestra is installed to /opt/xo, it uses self-signed certificates from /opt/ssl which you can replace if you wish. Installation script is at /opt/XenOrchestraInstallerUpdater which you can use to update existing installation in the future.
