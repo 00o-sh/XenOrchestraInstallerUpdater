@@ -489,6 +489,7 @@ rm -rf "$TMPDIR"
 echo "Waiting for Xen Orchestra installation to finish. This takes 10-20 minutes, timeout is $WAIT_TIMEOUT minutes"
 
 status=""
+step=""
 deadline=$((SECONDS + WAIT_TIMEOUT * 60))
 while [[ "$SECONDS" -lt "$deadline" ]]; do
     domid=$(xe vm-param-get uuid="$VM" param-name=dom-id 2>/dev/null)
@@ -497,10 +498,15 @@ while [[ "$SECONDS" -lt "$deadline" ]]; do
         status="$current"
         echo "$(date +%H:%M:%S) VM reports: $status"
     fi
+    current=$(xenstore-read "/local/domain/$domid/data/xo-step" 2>/dev/null)
+    if [[ -n "$current" ]] && [[ "$current" != "$step" ]]; then
+        step="$current"
+        echo "$(date +%H:%M:%S)   $step"
+    fi
     if [[ "$status" == "done" ]] || [[ "$status" == "failed" ]]; then
         break
     fi
-    sleep 20
+    sleep 5
 done
 
 ip=$(xenstore-read "/local/domain/$domid/data/xo-ip" 2>/dev/null)
@@ -550,7 +556,19 @@ report xo-install installing
 echo 'DPkg::Lock::Timeout "600";' >/etc/apt/apt.conf.d/90xo-lock-timeout
 apt-get install -y xe-guest-utilities >/dev/null 2>&1 || apt-get install -y xen-guest-agent >/dev/null 2>&1 || true
 cd /opt/xo-installer || exit 1
-./xo-install.sh --install >/var/log/xo-install.log 2>&1
+./xo-install.sh --install >/var/log/xo-install.log 2>&1 &
+pid=$!
+# forward latest installer step, e.g. "[ok] Running apt-get update", for the host to show
+last=""
+while kill -0 "$pid" 2>/dev/null; do
+    step=$(tr '\r' '\n' </var/log/xo-install.log | sed 's/\x1b\[[0-9;]*m//g' | grep '^\[' | tail -n 1 | cut -c 1-200)
+    if [[ -n "$step" ]] && [[ "$step" != "$last" ]]; then
+        report xo-step "$step"
+        last="$step"
+    fi
+    sleep 5
+done
+wait "$pid"
 report xo-ip "$(hostname -I | awk '{print $1}')"
 if systemctl is-active --quiet xo-server; then
     report xo-install done
