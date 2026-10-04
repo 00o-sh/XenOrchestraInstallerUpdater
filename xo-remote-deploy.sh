@@ -362,13 +362,20 @@ else
             echo "Physical interface $NET_PIF not found on pool master"
             exit 1
         fi
-        XO_VM_NETWORK=$(xe network-create name-label="$NET_NAME" name-description="Xen Orchestra test network, VLAN $NET_VLAN")
-        if ! xe pool-vlan-create network-uuid="$XO_VM_NETWORK" pif-uuid="$pif" vlan="$NET_VLAN" >/dev/null; then
-            xe network-destroy uuid="$XO_VM_NETWORK"
-            echo "Failed to create VLAN $NET_VLAN on $NET_PIF"
-            exit 1
+        # a VLAN can exist only once per interface, so reuse its network if it's already there
+        vlan_network=$(xe pif-list host-uuid="$master" device="$NET_PIF" VLAN="$NET_VLAN" params=network-uuid --minimal)
+        if [[ -n "$vlan_network" ]]; then
+            XO_VM_NETWORK="$vlan_network"
+            echo "VLAN $NET_VLAN already exists on $NET_PIF, reusing network $(xe network-param-get uuid="$XO_VM_NETWORK" param-name=name-label) ($XO_VM_NETWORK)"
+        else
+            XO_VM_NETWORK=$(xe network-create name-label="$NET_NAME" name-description="Xen Orchestra test network, VLAN $NET_VLAN")
+            if ! xe pool-vlan-create network-uuid="$XO_VM_NETWORK" pif-uuid="$pif" vlan="$NET_VLAN" >/dev/null; then
+                xe network-destroy uuid="$XO_VM_NETWORK"
+                echo "Failed to create VLAN $NET_VLAN on $NET_PIF"
+                exit 1
+            fi
+            echo "Created network $NET_NAME on $NET_PIF VLAN $NET_VLAN ($XO_VM_NETWORK)"
         fi
-        echo "Created network $NET_NAME on $NET_PIF VLAN $NET_VLAN ($XO_VM_NETWORK)"
     else
         XO_VM_NETWORK=$(xe network-create name-label="$NET_NAME" name-description="Xen Orchestra internal test network")
         echo "Created internal network $NET_NAME ($XO_VM_NETWORK)"
