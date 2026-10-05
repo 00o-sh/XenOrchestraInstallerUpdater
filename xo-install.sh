@@ -722,6 +722,37 @@ function PrepInstall {
 }
 
 # run actual xen orchestra installation. procedure is the same for new installation and update. we always build it from scratch.
+# create self-signed certificate for this host: hostname as subject and all its names and addresses as alternative names.
+# validity of 825 days is the longest Apple platforms accept. if this fails, xo-server's autoCert creates one instead
+function GenerateSelfSignedCertificate {
+
+    set -uo pipefail
+
+    local FQDN="$(hostname -f 2>/dev/null || hostname)"
+    local SHORT="$(hostname -s 2>/dev/null || hostname)"
+    local SAN="DNS:$FQDN"
+    [[ "$SHORT" != "$FQDN" ]] && SAN="$SAN,DNS:$SHORT"
+    SAN="$SAN,DNS:localhost,IP:127.0.0.1"
+    local IP
+    for IP in $(hostname -I 2>/dev/null); do
+        # skip IPv6 link-local addresses
+        [[ "$IP" == fe80:* ]] && continue
+        SAN="$SAN,IP:$IP"
+    done
+
+    echo
+    printprog "Creating self-signed certificate for $FQDN"
+    if runcmd "mkdir -p \"$(dirname "$PATH_TO_HTTPS_CERT")\" \"$(dirname "$PATH_TO_HTTPS_KEY")\" && openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 -subj \"/CN=$FQDN/O=Xen Orchestra (self-signed)\" -addext \"subjectAltName=$SAN\" -addext \"extendedKeyUsage=serverAuth\" -keyout \"$PATH_TO_HTTPS_KEY\" -out \"$PATH_TO_HTTPS_CERT\" && chmod 600 \"$PATH_TO_HTTPS_KEY\""; then
+        printok "Creating self-signed certificate for $FQDN"
+        if [[ "$XOUSER" != "root" ]]; then
+            runcmd "chown $XOUSER \"$PATH_TO_HTTPS_CERT\" \"$PATH_TO_HTTPS_KEY\""
+        fi
+    else
+        printfail "Creating self-signed certificate for $FQDN, xo-server will generate one instead"
+        runcmd "rm -f \"$PATH_TO_HTTPS_CERT\" \"$PATH_TO_HTTPS_KEY\""
+    fi
+}
+
 function InstallXO {
 
     set -euo pipefail
@@ -920,6 +951,11 @@ function InstallXO {
 
         runcmd "chown -R $XOUSER:$XOUSER $CONFIGPATH/.config/xo-server"
 
+    fi
+
+    # self-signed certificate with this host's names instead of the placeholder subject xo-server's autoCert uses
+    if [[ "$HTTPS" == "true" ]] && [[ "$AUTOCERT" == "true" ]] && [[ "$ACME" != "true" ]] && [[ ! -f "$PATH_TO_HTTPS_CERT" ]] && [[ ! -f "$PATH_TO_HTTPS_KEY" ]]; then
+        GenerateSelfSignedCertificate
     fi
 
     echo
