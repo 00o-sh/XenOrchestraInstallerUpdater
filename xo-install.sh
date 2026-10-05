@@ -730,6 +730,10 @@ function GenerateSelfSignedCertificate {
 
     local FQDN="$(hostname -f 2>/dev/null || hostname)"
     local SHORT="$(hostname -s 2>/dev/null || hostname)"
+    # subject common name is limited to 64 characters, longer names are still valid in subjectAltName
+    local CN="$FQDN"
+    [[ "${#CN}" -gt 64 ]] && CN="$SHORT"
+    CN="${CN:0:64}"
     local SAN="DNS:$FQDN"
     [[ "$SHORT" != "$FQDN" ]] && SAN="$SAN,DNS:$SHORT"
     SAN="$SAN,DNS:localhost,IP:127.0.0.1"
@@ -742,12 +746,13 @@ function GenerateSelfSignedCertificate {
 
     echo
     printprog "Creating self-signed certificate for $FQDN"
-    if runcmd "mkdir -p \"$(dirname "$PATH_TO_HTTPS_CERT")\" \"$(dirname "$PATH_TO_HTTPS_KEY")\" && openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 -subj \"/CN=$FQDN/O=Xen Orchestra (self-signed)\" -addext \"subjectAltName=$SAN\" -addext \"extendedKeyUsage=serverAuth\" -keyout \"$PATH_TO_HTTPS_KEY\" -out \"$PATH_TO_HTTPS_CERT\" && chmod 600 \"$PATH_TO_HTTPS_KEY\""; then
+    if runcmd "mkdir -p \"$(dirname "$PATH_TO_HTTPS_CERT")\" \"$(dirname "$PATH_TO_HTTPS_KEY")\" && openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 825 -subj \"/CN=$CN/O=Xen Orchestra (self-signed)\" -addext \"subjectAltName=$SAN\" -addext \"extendedKeyUsage=serverAuth\" -keyout \"$PATH_TO_HTTPS_KEY\" -out \"$PATH_TO_HTTPS_CERT\" && chmod 600 \"$PATH_TO_HTTPS_KEY\""; then
         printok "Creating self-signed certificate for $FQDN"
         if [[ "$XOUSER" != "root" ]]; then
             runcmd "chown $XOUSER \"$PATH_TO_HTTPS_CERT\" \"$PATH_TO_HTTPS_KEY\""
         fi
     else
+        echo
         printfail "Creating self-signed certificate for $FQDN, xo-server will generate one instead"
         runcmd "rm -f \"$PATH_TO_HTTPS_CERT\" \"$PATH_TO_HTTPS_KEY\""
     fi
