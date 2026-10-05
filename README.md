@@ -69,6 +69,8 @@ See [Wiki](https://github.com/ronivay/XenOrchestraInstallerUpdater/wiki) for com
 
 There is a file called `sample.xo-install.cfg` which you should copy as `xo-install.cfg`. This file holds some editable configuration settings you might want to change depending on your needs.
 
+By default Xen Orchestra is served over HTTPS on port 443 with a self-signed certificate that xo-server generates to `/opt/xo/xo.crt` and `/opt/xo/xo.key`, and plain HTTP on port 80 redirects to it. Replace the certificate files with your own, use `ACME` for Let's Encrypt, or comment out `PATH_TO_HTTPS_CERT`/`PATH_TO_HTTPS_KEY` for plain HTTP. Existing `xo-install.cfg` files keep their current settings.
+
 When done editing configuration, just run the script with root privileges:
 ```
 sudo ./xo-install.sh

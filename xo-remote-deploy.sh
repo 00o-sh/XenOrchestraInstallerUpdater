@@ -925,6 +925,30 @@ function FetchGuestAgent {
     fi
 }
 
+# value of a setting in the xo-install.cfg used for the VM, the same way xo-install.sh reads it
+function ConfigValue {
+    # shellcheck disable=SC2016
+    bash -c 'INSTALLDIR=/opt/xo; source "$1" >/dev/null 2>&1; printf "%s" "${!2}"' bash "$XO_CONFIG" "$1"
+}
+
+# Xen Orchestra address according to port and HTTPS settings applied by xo-install.sh
+function WebUrl {
+    local port
+    port=$(ConfigValue PORT)
+    port=${port:-80}
+    if [[ -n "$(ConfigValue PATH_TO_HTTPS_CERT)" ]] && [[ -n "$(ConfigValue PATH_TO_HTTPS_KEY)" ]]; then
+        # with redirect (and ACME) HTTPS is served on 443 and PORT is the redirecting HTTP port
+        if [[ "$(ConfigValue HTTPS_REDIRECT)" == "true" ]] || [[ "$(ConfigValue ACME)" == "true" ]]; then
+            port=443
+        fi
+        [[ "$port" == "443" ]] && port=""
+        echo "https://$1${port:+:$port}"
+    else
+        [[ "$port" == "80" ]] && port=""
+        echo "http://$1${port:+:$port}"
+    fi
+}
+
 function Deploy {
 
     if [[ "$PRINT_ONLY" != "true" ]]; then
@@ -991,19 +1015,21 @@ function Deploy {
 
     [[ "$USE_PREBUILT" == "true" ]] && return 0
 
-    local result status ip port
+    local result status ip url
     result=$(cat "$SSH_CTRL_DIR/result" 2>/dev/null)
     status=$(sed -n 's/.*status=\([^ ]*\).*/\1/p' <<<"$result")
     ip=$(sed -n 's/.*ip=\([^ ]*\).*/\1/p' <<<"$result")
-    port=$(sed -n 's/^PORT="\{0,1\}\([0-9]*\)"\{0,1\}.*/\1/p' "$XO_CONFIG" | tail -1)
+    url=$(WebUrl "$ip")
 
     echo
     case "$status" in
         done)
             echo "Xen Orchestra is installed and running"
             echo
-            [[ "$port" == "80" ]] && port=""
-            echo "Web UI: http://$ip${port:+:$port} (admin@admin.net / admin)"
+            echo "Web UI: $url (admin@admin.net / admin)"
+            if [[ "$url" == https://* ]] && [[ "$(ConfigValue AUTOCERT)" == "true" ]]; then
+                echo "        Certificate is self-signed, so the browser warns about it until you trust or replace it"
+            fi
             ;;
         failed)
             echo "Xen Orchestra installation failed inside the VM. See /var/log/xo-install.log and /opt/xo-installer/logs in the VM"

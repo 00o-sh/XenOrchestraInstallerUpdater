@@ -44,6 +44,7 @@ PATH_TO_HTTPS_CERT="${PATH_TO_HTTPS_CERT:-""}"
 PATH_TO_HTTPS_KEY="${PATH_TO_HTTPS_KEY:-""}"
 PATH_TO_HOST_CA="${PATH_TO_HOST_CA:-""}"
 AUTOCERT="${AUTOCERT:-"false"}"
+HTTPS_REDIRECT="${HTTPS_REDIRECT:-"false"}"
 ACME="${ACME:-"false"}"
 ACME_EMAIL="${ACME_EMAIL:-""}"
 ACME_CA="${ACME_CA:-"letsencrypt/production"}"
@@ -852,10 +853,14 @@ function InstallXO {
                 # shellcheck disable=SC1117
                 runcmd "sed -i \"s%# autoCert = false%autoCert = true%\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
             fi
-            if [[ "$ACME" == "true" ]]; then
+            # plain HTTP listener on PORT redirecting to a HTTPS listener on 443
+            if [[ "$ACME" == "true" ]] || [[ "$HTTPS_REDIRECT" == "true" ]]; then
+                printinfo "Enabling HTTP to HTTPS redirect in xo-server configuration file"
                 runcmd "sed -i \"s%# \[\[http.listen\]\]%\[\[http.listen\]\]%\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
                 runcmd "sed -i \"s%# port = 443%port = 443%\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
                 runcmd "sed -i \"s%^# redirectToHttps = true%redirectToHttps = true%\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
+            fi
+            if [[ "$ACME" == "true" ]]; then
                 runcmd "sed -i \"/^autoCert =.*/a acmeCa = '$ACME_CA'\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
                 runcmd "sed -i \"/^autoCert = .*/a acmeDomain = '$ACME_DOMAIN'\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
                 if [[ -n "$ACME_EMAIL" ]]; then
