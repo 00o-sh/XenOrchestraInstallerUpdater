@@ -526,8 +526,8 @@ function InstallBundledXOPlugins {
         fi
         local PLUGIN_DIR="$INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/$x"
         runcmd "rm -rf \"$PLUGIN_DIR\" && cp -r \"$SCRIPT_DIR/plugins/$x\" \"$PLUGIN_DIR\" && rm -rf \"$PLUGIN_DIR/test\""
-        # lets plugin find this script and installation
-        printf '{ "scriptDir": "%s", "installDir": "%s" }\n' "$SCRIPT_DIR" "$INSTALLDIR" >"$PLUGIN_DIR/installer.json"
+        # lets plugin find this script and installation. absolute path, plugin runs from xo-server directory
+        printf '{ "scriptDir": "%s", "installDir": "%s" }\n' "$(cd "$SCRIPT_DIR" && pwd)" "$INSTALLDIR" >"$PLUGIN_DIR/installer.json"
     done
 
     printok "Adding bundled plugin(s)"

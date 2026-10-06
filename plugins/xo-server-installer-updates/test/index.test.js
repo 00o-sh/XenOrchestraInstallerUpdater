@@ -237,6 +237,11 @@ test('missing branch and unknown installer location are reported as errors', asy
 
   const unknown = new InstallerUpdates({ xo: fakeXo(), installer: {} })
   assert.equal((await unknown.check()).state, 'error')
+
+  // older xo-install.sh wrote the directory it was started from, e.g. "."
+  const relative = new InstallerUpdates({ xo: fakeXo(), installer: { scriptDir: '.', installDir } })
+  assert.equal((await relative.check()).state, 'error')
+  await assert.rejects(relative.apply(), /installer location unknown/)
 })
 
 test('lists builds newest first with the active one marked', async () => {

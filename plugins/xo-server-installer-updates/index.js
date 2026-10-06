@@ -124,7 +124,9 @@ class InstallerUpdates {
     this._now = now
     this._getDataDir = getDataDir
     // written by xo-install.sh when it copies this plugin into the build
-    this._scriptDir = installer.scriptDir
+    // relative path written by older xo-install.sh versions would resolve against xo-server directory
+    this._scriptDir =
+      installer.scriptDir !== undefined && path.isAbsolute(installer.scriptDir) ? installer.scriptDir : undefined
     this._installDir = installer.installDir ?? '/opt/xo'
     this._configuration = {}
     this._status = { state: 'unknown' }
@@ -331,7 +333,7 @@ class InstallerUpdates {
       throw new Error('an update or rollback is already running')
     }
     if (this._scriptDir === undefined) {
-      throw new Error('installer location unknown')
+      throw new Error('installer location unknown, reinstall with xo-install.sh to set it up')
     }
     await this._saveState({ operation: { type, target, startedAt: this._now().toISOString() } })
     // transient unit survives xo-server being stopped, exit code is appended for the result
