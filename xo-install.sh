@@ -533,6 +533,77 @@ function InstallBundledXOPlugins {
     printok "Adding bundled plugin(s)"
 }
 
+# patches applied to xen-orchestra source before it is built. each is a fix not yet in upstream: one that
+# applies is applied, one already in the source is skipped, and one that no longer fits is reported and
+# skipped, so the install never fails for a patch. add one by adding a function and a line to the list below.
+#
+# disk.importContent: the handler never got the format the call advertises (its data holds only the vdi), so
+# VDI_importContent's assertion refused every import into an existing disk; and the handler's own `format`
+# hid json-rpc-peer's, which answers the upload. importing into a disk that already exists is how
+# fleetwright writes a router's configuration into a copy of a kept disk instead of sending all of it.
+function PatchDiskImportContent {
+    cat <<'EOF'
+diff --git a/packages/xo-server/src/api/disk.mjs b/packages/xo-server/src/api/disk.mjs
+index 424d1bc..07ada46 100644
+--- a/packages/xo-server/src/api/disk.mjs
++++ b/packages/xo-server/src/api/disk.mjs
+@@ -156,19 +156,20 @@ exportContent.resolve = {
+ 
+ // -------------------------------------------------------------------
+ 
+-async function handleImportContent(req, res, { vdi, format }) {
++async function handleImportContent(req, res, { vdi, format: diskFormat }) {
+   // Timeout seems to be broken in Node 4.
+   // See https://github.com/nodejs/node/issues/3319
+   req.setTimeout(43200000) // 12 hours
+   req.length = +req.headers['content-length']
+-  await vdi.$importContent(req, { format })
++  await vdi.$importContent(req, { format: diskFormat })
+   res.end(format.response(0, true))
+ }
+ 
+-export async function importContent({ vdi }) {
++export async function importContent({ vdi, format }) {
+   return {
+     $sendTo: await this.registerHttpRequest(handleImportContent, {
+       vdi: this.getXapiObject(vdi),
++      format,
+     }),
+   }
+ }
+EOF
+}
+
+function ApplySourcePatches {
+
+    set -euo pipefail
+
+    trap ErrorHandling ERR INT
+
+    local SRC="$INSTALLDIR/xo-builds/xen-orchestra-$TIME"
+    local PATCHES=(PatchDiskImportContent)
+    local PATCHFILE
+    PATCHFILE=$(mktemp)
+
+    for x in "${PATCHES[@]}"; do
+        "$x" >"$PATCHFILE"
+        if git -C "$SRC" apply --check "$PATCHFILE" >>"$LOGFILE" 2>&1; then
+            echo
+            printprog "Applying source patch $x"
+            runcmd "git -C \"$SRC\" apply \"$PATCHFILE\""
+            printok "Applying source patch $x"
+        elif git -C "$SRC" apply --reverse --check "$PATCHFILE" >>"$LOGFILE" 2>&1; then
+            echo
+            printinfo "Source patch $x is already in xen-orchestra, skipping"
+        else
+            echo
+            printinfo "Source patch $x no longer applies to this xen-orchestra, building without it"
+        fi
+    done
+
+    rm -f "$PATCHFILE"
+}
+
 function InstallXOPlugins {
 
     set -euo pipefail
@@ -786,6 +857,9 @@ function InstallXO {
 
     # Add plugins shipped in this repository
     InstallBundledXOPlugins
+
+    # Fixes not yet in upstream
+    ApplySourcePatches
 
     echo
     printinfo "xo-server and xo-web build takes quite a while. Grab a cup of coffee and lay back"
