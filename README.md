@@ -193,6 +193,14 @@ Note that for obvious reasons some of the proxy features seen in Xen Orchestra U
 
 Plugins are installed according to what is specified in `PLUGINS` variable inside `xo-install.cfg` configuration file. By default all available plugins that are part of xen orchestra repository are installed. This list can be narrowed down if needed and 3rd party plugins included.
 
+#### Source patches
+
+Before it builds, the script applies fixes to the Xen Orchestra source that upstream doesn't have yet (`ApplySourcePatches` in `xo-install.sh`). A patch is skipped, and the build goes on, if it's already in the source or no longer applies; the log says which. There is one:
+
+- **`disk.importContent`** writes into a disk that already exists. Upstream never hands the call's `format` to its upload handler, so every import is refused, and the handler's own `format` hides the JSON-RPC helper that answers the upload.
+
+An install only rebuilds when Xen Orchestra's commit changes, so an existing install picks up a new patch at its next update, or straight away with `--force`.
+
 ### Image
 
 If you don't want to first install a VM and then use `xo-install.sh` script on it, you have the possibility to import VM image which has everything already setup. Use `xo-vm-import.sh` to do this, it'll download a prebuilt Debian 11 image which has Xen Orchestra and XenOrchestraInstallerUpdater installed.
