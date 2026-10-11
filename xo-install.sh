@@ -55,6 +55,9 @@ INSTALL_REPOS="${INSTALL_REPOS:-"true"}"
 SYSLOG_TARGET="${SYSLOG_TARGET:-""}"
 YARN_CACHE_CLEANUP="${YARN_CACHE_CLEANUP:-"false"}"
 YARN_NETWORK_TIMEOUT="${YARN_NETWORK_TIMEOUT:-"300000"}"
+PUBLIC_URL="${PUBLIC_URL:-""}"
+USE_FORWARDED_HEADERS="${USE_FORWARDED_HEADERS:-"false"}"
+COOKIE_SECURE="${COOKIE_SECURE:-"false"}"
 
 # set variables not changeable in configfile
 TIME=$(date +%Y%m%d%H%M)
@@ -105,18 +108,18 @@ function SelfUpgrade {
     fi
 
     if [[ -d "$SCRIPT_DIR/.git" ]] && [[ -n $(runcmd_stdout "command -v git") ]]; then
-        local REMOTE="$(runcmd_stdout "cd $SCRIPT_DIR && git config --get remote.origin.url")"
+        local REMOTE="$(runcmd_stdout "git -C $SCRIPT_DIR config --get remote.origin.url")"
         if [[ "$REMOTE" == *"ronivay/XenOrchestraInstallerUpdater"* ]]; then
-            if [[ -n $(runcmd_stdout "cd $SCRIPT_DIR && git status --porcelain") ]]; then
+            if [[ -n $(runcmd_stdout "git -C $SCRIPT_DIR status --porcelain") ]]; then
                 printfail "Local changes in this script directory. Not attempting to self upgrade"
                 return 0
             fi
-            runcmd "cd $SCRIPT_DIR && git fetch"
-            local OLD_SCRIPT_VERSION="$(runcmd_stdout "cd $SCRIPT_DIR && git rev-parse --short HEAD")"
-            local NEW_SCRIPT_VERSION="$(runcmd_stdout "cd $SCRIPT_DIR && git rev-parse --short FETCH_HEAD")"
-            if [[ $(runcmd_stdout "cd $SCRIPT_DIR && git diff --name-only @{upstream}| grep xo-install.sh") ]]; then
+            runcmd "git -C $SCRIPT_DIR fetch"
+            local OLD_SCRIPT_VERSION="$(runcmd_stdout "git -C $SCRIPT_DIR rev-parse --short HEAD")"
+            local NEW_SCRIPT_VERSION="$(runcmd_stdout "git -C $SCRIPT_DIR rev-parse --short FETCH_HEAD")"
+            if [[ $(runcmd_stdout "git  -C $SCRIPT_DIR diff --name-only @{upstream}| grep xo-install.sh") ]]; then
                 printinfo "Newer version of script available, attempting to self upgrade from '$OLD_SCRIPT_VERSION' to '$NEW_SCRIPT_VERSION'"
-                runcmd "cd $SCRIPT_DIR && git pull --ff-only" &&
+                runcmd "git -C $SCRIPT_DIR pull --ff-only" &&
                     {
                         printok "Self upgrade done"
                         exec "$SCRIPT_DIR/xo-install.sh" "$@"
@@ -133,7 +136,7 @@ function ScriptInfo {
 
     set -o pipefail
 
-    local SCRIPTVERSION=$(cd "$SCRIPT_DIR" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null)
+    local SCRIPTVERSION=$(git -C $SCRIPT_DIR rev-parse --short HEAD 2>/dev/null)
 
     [ -z "$SCRIPTVERSION" ] && SCRIPTVERSION="undefined"
     echo "Running script version $SCRIPTVERSION with config:" >>"$LOGFILE"
@@ -326,14 +329,6 @@ function InstallDependenciesDeb {
         printok "Installing libfuse2t64"
     fi
 
-    # install setcap for non-root port binding if missing
-    if [[ -z $(runcmd_stdout "command -v setcap") ]]; then
-        echo
-        printprog "Installing setcap"
-        runcmd "apt-get install -y libcap2-bin"
-        printok "Installing setcap"
-    fi
-
     # only run automated node install if executable not found
     if [[ -z $(runcmd_stdout "command -v node") ]] || [[ -z $(runcmd_stdout "command -v npm") ]]; then
         echo
@@ -491,8 +486,7 @@ function InstallAdditionalXOPlugins {
             runcmd "mkdir -p \"$PLUGIN_SRC_DIR\""
             runcmd "git clone \"${x}\" \"$PLUGIN_SRC_DIR\""
         else
-            runcmd "cd \"$PLUGIN_SRC_DIR\" && git pull --ff-only"
-            runcmd "cd $SCRIPT_DIR"
+            runcmd "git -C \"$PLUGIN_SRC_DIR\" pull --ff-only"
         fi
 
         runcmd "cp -r $PLUGIN_SRC_DIR $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/"
@@ -705,10 +699,10 @@ function PrepInstall {
         runcmd "mkdir -p \"$XO_SRC_DIR\""
         runcmd "git clone \"${REPOSITORY}\" \"$XO_SRC_DIR\""
     else
-        runcmd "cd \"$XO_SRC_DIR\" && git remote set-url origin \"${REPOSITORY}\" && \
-            git fetch --prune && \
-            git reset --hard origin/master && \
-            git clean -xdff"
+        runcmd "git -C \"$XO_SRC_DIR\" remote set-url origin \"${REPOSITORY}\" && \
+            git -C \"$XO_SRC_DIR\" fetch --prune && \
+            git -C \"$XO_SRC_DIR\" reset --hard origin/master && \
+            git -C \"$XO_SRC_DIR\" clean -xdff"
     fi
 
     # Deploy the latest xen-orchestra source to the new install directory.
@@ -722,24 +716,26 @@ function PrepInstall {
         echo
         printinfo "Checking out source code from branch/commit '$BRANCH'"
 
-        runcmd "cd $INSTALLDIR/xo-builds/xen-orchestra-$TIME && git checkout $BRANCH"
-        runcmd "cd $SCRIPT_DIR"
+        runcmd "git -C $INSTALLDIR/xo-builds/xen-orchestra-$TIME checkout $BRANCH"
     fi
 
     # Check if the new repo is any different from the currently-installed
     # one. If not, then skip the build and delete the repo we just cloned.
 
     # Get the commit ID of the to-be-installed xen-orchestra.
-    local NEW_REPO_HASH=$(runcmd_stdout "cd $INSTALLDIR/xo-builds/xen-orchestra-$TIME && git rev-parse HEAD")
-    local NEW_REPO_HASH_SHORT=$(runcmd_stdout "cd $INSTALLDIR/xo-builds/xen-orchestra-$TIME && git rev-parse --short HEAD")
-    runcmd "cd $SCRIPT_DIR"
+    local NEW_REPO_HASH=$(runcmd_stdout "git -C $INSTALLDIR/xo-builds/xen-orchestra-$TIME rev-parse HEAD")
+    local NEW_REPO_HASH_SHORT=$(runcmd_stdout "git -C $INSTALLDIR/xo-builds/xen-orchestra-$TIME rev-parse --short HEAD")
 
     # Get the commit ID of the currently-installed xen-orchestra (if one
     # exists).
     if [[ -L "$INSTALLDIR/$XO_SVC" ]] && [[ -n $(runcmd_stdout "readlink -e $INSTALLDIR/$XO_SVC") ]]; then
-        local OLD_REPO_HASH=$(runcmd_stdout "cd $INSTALLDIR/$XO_SVC && git rev-parse HEAD")
-        local OLD_REPO_HASH_SHORT=$(runcmd_stdout "cd $INSTALLDIR/$XO_SVC && git rev-parse --short HEAD")
-        runcmd "cd $SCRIPT_DIR"
+        if [[ "$XOUSER" != "root" ]]; then
+            local OLD_REPO_HASH=$(runcmd_stdout "runuser -u $XOUSER -- git -C $INSTALLDIR/$XO_SVC rev-parse HEAD")
+            local OLD_REPO_HASH_SHORT=$(runcmd_stdout "runuser -u $XOUSER -- git -C $INSTALLDIR/$XO_SVC rev-parse --short HEAD")
+        else
+            local OLD_REPO_HASH=$(runcmd_stdout "git -C $INSTALLDIR/$XO_SVC rev-parse HEAD")
+            local OLD_REPO_HASH_SHORT=$(runcmd_stdout "git -C $INSTALLDIR/$XO_SVC rev-parse --short HEAD")
+        fi
     else
         # If there's no existing installation, then we definitely want
         # to proceed with the bulid.
@@ -902,21 +898,8 @@ function InstallXO {
         runcmd "sed -i \"/SyslogIdentifier=.*/a User=$XOUSER\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/xo-server.service"
 
         if [ "$PORT" -le "1024" ]; then
-            local NODEBINARY=$(runcmd_stdout "command -v node")
-            if [[ -L "$NODEBINARY" ]]; then
-                local NODEBINARY=$(runcmd_stdout "readlink -e $NODEBINARY")
-            fi
-
-            if [[ -n "$NODEBINARY" ]]; then
-                printprog "Attempting to set cap_net_bind_service permission for $NODEBINARY"
-                runcmd "setcap 'cap_net_bind_service=+ep' $NODEBINARY" && printok "Attempting to set cap_net_bind_service permission for $NODEBINARY" ||
-                    {
-                        printfail "Attempting to set cap_net_bind_service permission for $NODEBINARY"
-                        echo "	Non-privileged user might not be able to bind to <1024 port. xo-server won't start most likely"
-                    }
-            else
-                printfail "Can't find node executable, or it's a symlink to non existing file. Not trying to setcap. xo-server won't start most likely"
-            fi
+            printinfo "Adding AmbientCapabilities to systemd config"
+            runcmd "sed -i \"/SyslogIdentifier=.*/a AmbientCapabilities=CAP_NET_BIND_SERVICE\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/xo-server.service"
         fi
     fi
 
@@ -992,6 +975,21 @@ function InstallXO {
             printinfo "Enabling remote syslog in xo-server configuration file"
             runcmd "sed -i \"s%#\[logs.transport.syslog\]%\[logs.transport.syslog\]%\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
             runcmd "sed -i \"/^\[logs.transport.syslog.*/a target = '$SYSLOG_TARGET'\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
+        fi
+
+        if [[ -n "$PUBLIC_URL" ]]; then
+            printinfo "Setting public URL in xo-server configuration file"
+            runcmd "sed -i \"/^#publicUrl =.*/a publicUrl = '$PUBLIC_URL'\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
+        fi
+
+        if [[ "$USE_FORWARDED_HEADERS" == "true" ]]; then
+            printinfo "Trusting forwarded headers in xo-server configuration file"
+            runcmd "sed -i \"s/#useForwardedHeaders = true/useForwardedHeaders = true/\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
+        fi
+
+        if [[ "$COOKIE_SECURE" == "true" ]]; then
+            printinfo "Enabling secure cookies in xo-server configuration file"
+            runcmd "sed -i \"/^\[http.cookies\]/a secure = true\" $INSTALLDIR/xo-builds/xen-orchestra-$TIME/packages/xo-server/sample.config.toml"
         fi
 
         printinfo "Activating modified configuration file"
